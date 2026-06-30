@@ -6,17 +6,9 @@ The motivation is that knowledge-graph construction literature assumes clean pla
 
 ## Pipeline
 
-```
-   PPTX / PDF / image
-          │
-          ▼
-   ┌─────────────┐   text per slide    ┌─────────────┐  typed entities      ┌───────────────┐  CURIE per entity
-   │  Stage 1    │ ──────────────────▶ │  Stage 2    │ ───────────────────▶ │   Stage 3     │ ──────────────────▶
-   │  OCR        │                     │  NER        │                      │ Normalization │
-   └─────────────┘                     └─────────────┘                      └───────────────┘
-   GLM-OCR (VLM)                       Llama-3.1-8B (ZeroTuneBio)           RENCI + ARAX retrieval
-                                                                            + Llama-3.1-8B judge (BeLink)
-```
+
+![pipeline](docs/pipeline.png)
+
 
 Each stage is an independent module, exposes a single entry point, and manages its own model lifecycle. The design target is a single consumer GPU (NVIDIA RTX 4060 Laptop, 8 GB VRAM), which constrains every modelling and systems decision.
 
