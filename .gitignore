@@ -1,25 +1,11 @@
-# ---- Secrets: never commit ----
+# Secrets
 .env
-*.env
-!.env.example
-hf_token.txt
 
-# ---- Python ----
+# Python bytecode
 __pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
 
-# ---- Virtual environments ----
+# Virtual environment (uv may create one here; we use ../finalvenv instead)
 .venv/
-venv/
-env/
 
-# ---- Caches ----
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# ---- OS ----
-.DS_Store
+# Data (not committed: large / possibly copyrighted slide material)
+Dataset/
