@@ -1,0 +1,25 @@
+# ---- Secrets: never commit ----
+.env
+*.env
+!.env.example
+hf_token.txt
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- OS ----
+.DS_Store

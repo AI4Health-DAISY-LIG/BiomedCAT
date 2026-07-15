@@ -12,6 +12,29 @@ The motivation is that knowledge-graph construction literature assumes clean pla
 
 Each stage is an independent module, exposes a single entry point, and manages its own model lifecycle. The design target is a single consumer GPU (NVIDIA RTX 4060 Laptop, 8 GB VRAM), which constrains every modelling and systems decision.
 
+## Repository layout
+
+The core is an installable Python package, `biomedcat`, organized one module per concern:
+
+- `config.py`: deployment configuration (model identifiers, resolver endpoints, and the Hugging Face token), read from the environment or a local `.env` file.
+- `types.py`: the typed data model passed between stages (Slide, Entity, Candidate, NormalizedEntity), together with the biomedical entity-type vocabulary.
+- `runtime.py`: the shared runtime layer, comprising the CUDA and determinism setup, the 4-bit language-model factory, and the greedy generation helper.
+- `prompts.py`: every model-facing prompt, isolated so the research-tuned wording is versioned separately from the pipeline logic.
+- `stages/ocr.py`, `stages/ner.py`, `stages/norm.py`: the three stages, each exposing a single entry point and managing its own model lifecycle.
+- `retrieval.py`: the RENCI and ARAX resolvers behind a common interface, supplying candidates to the normalization stage.
+- `pipeline.py`: the orchestrator that runs one file through the three stages in sequence.
+
+## Requirements and setup
+
+The pipeline targets a single consumer GPU (NVIDIA RTX 4060 Laptop, 8 GB VRAM) with CUDA. Beyond the Python dependencies, two system tools are required: `poppler-utils` for PDF rasterization, and LibreOffice for the slide-deck to PDF conversion.
+
+Python dependencies are pinned with `uv`. From the project root:
+
+    sudo apt install poppler-utils libreoffice
+    uv sync
+
+`uv sync` builds the environment from `pyproject.toml` and the committed `uv.lock`, reproducing the exact dependency versions the pipeline was developed against. The gated Llama-3.1-8B repository requires a Hugging Face token, supplied as `BIOMEDCAT_HF_TOKEN` in a local `.env` file.
+
 ## Engineering substrate
 
 The three stages share a common set of constraints and conventions:
@@ -48,7 +71,7 @@ Preprocessing is fully deterministic (normalization, repair of hyphenated line b
 
 The per-term classification loop dominates runtime. Batching it was evaluated and rejected: it ran several times slower (long, variable model outputs force every call in a batch to wait for the slowest) and it changed a verdict (a gene was reclassified as none), so the stage is at its computational floor on this hardware.
 
-**Status:** no gold set yet, so Stage 2 is not quantitatively evaluated. The planned protocol uses exact and partial-match precision, recall, and F1. The model stages are also not yet reproducible across separate runs.
+**Status:** no gold set yet, so Stage 2 is not quantitatively evaluated. The planned protocol uses exact and partial-match precision, recall, and F1.
 
 ## Stage 3: Normalization
 
@@ -87,7 +110,7 @@ Stage 1 has crossed the research-evaluation bar. Stages 2 and 3 have working, in
 ## Limitations and future work
 
 - **Gold annotation.** No gold set exists for NER or Normalization, so every heuristic is currently unvalidated. This is the highest-priority item.
-- **Reproducibility.** The Normalization judge is deterministic across runs; the NER model stages are not, and should be made reproducible before NER is scored.
+- **Reproducibility.** Determinism is enforced pipeline-wide through a fixed seed, deterministic algorithm selection, and a pinned cuBLAS workspace. The non-model steps are reproducible by construction, and the greedy model steps are deterministic up to the best-effort limits of the available deterministic GPU kernels.
 - **Modality coverage.** OCR processes slide decks, PDFs, and images. Slide-deck support depends on a system office suite installation for the conversion step.
 - **Computational ceiling.** On the 8 GB target GPU the language-model stages are at their computational floor; further gains would require different hardware.
 - **Definition-grounded typing (planned).** NER typing currently relies on a handful of hand-written type definitions. A planned extension retrieves authoritative definitions from a standard biomedical ontology and supplies them to the classifier, grounding typing in the ontology rather than ad hoc definitions and aligning it with the categories used during normalization.
