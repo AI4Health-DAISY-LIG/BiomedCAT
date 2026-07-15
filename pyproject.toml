@@ -18,6 +18,7 @@ dependencies = [
     "scispacy==0.6.2",
     "langchain-core==0.3.83",
     "requests==2.32.5",
+    "en-core-sci-sm",
 ]
 
 [build-system]
@@ -37,3 +38,4 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu118" }
+en-core-sci-sm = { url = "https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz" }
