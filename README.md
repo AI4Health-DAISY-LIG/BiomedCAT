@@ -94,7 +94,7 @@ uv run python -m biomedcat.pipeline path/to/your/slides.pptx
 
 After the download, each file takes several minutes: three models load in sequence (GLM-OCR, then Llama for NER, then Llama for normalization) and two public resolvers are queried, with the NER stage dominating. Progress is logged per stage.
 
-The terminal shows stage-level progress and any warnings. The JSON holds the transcribed text per slide, the typed entities, and the identifier each entity was linked to, together with the model identifiers, resolver endpoints, and elapsed time behind the run, so a later run that differs can be distinguished from a code change. The log holds the complete trace that the terminal omits: the sentences produced by segmentation, the candidate terms proposed and the subset surviving grounding, the type assigned to each term, and the candidate the judge selected for each entity. It is written even when a file fails, since that is when the trace is most needed.
+The terminal shows stage-level progress and any warnings. The JSON holds the transcribed text per slide, the typed entities, and the identifier each was linked to, alongside the models, resolver endpoints, and elapsed time behind the run. The log holds the full per-sentence trace, and is written even when a file fails.
 
 ### Example output
 
@@ -143,9 +143,9 @@ Three design choices, all shaped by the 8 GB VRAM budget, are shared across the 
 
 **NER.** Following ZeroTuneBio, each sentence passes through three steps over Llama-3.1-8B: extract all professional terms to maximize recall, keep only the terms grounded in the sentence to drop hallucinations, and classify each grounded term into one of ten types or none to recover precision.
 
-### Entity type system
+### Entity types
 
-The ten entity types are derived from the Biolink Model (version 4.4.3), the schema underlying the NCATS Biomedical Data Translator, so that every type the extractor can assign corresponds to a class the resolvers can be queried against. A class was admitted only if it satisfies three conditions: it is not a mixin, it declares `id_prefixes` and can therefore be the category of a resolved identifier (58 of the model's 334 classes qualify), and a type-constrained query against the RENCI name resolver returns results for it. The third condition is not redundant: an unrecognised type is answered with HTTP 200 and an empty result list rather than an error, so an invalid mapping is otherwise indistinguishable from a term that has no candidates.
+The ten entity types are derived from the Biolink Model (version 4.4.3), the schema underlying the NCATS Biomedical Data Translator. Each maps to a Biolink class that can carry an identifier, so the type assigned during extraction can be used directly to constrain retrieval.
 
 | Entity type | Biolink class |
 |---|---|
@@ -160,18 +160,18 @@ The ten entity types are derived from the Biolink Model (version 4.4.3), the sch
 | `BIOLOGICAL_PROCESS` | `biolink:BiologicalProcessOrActivity` |
 | `SEQUENCE_VARIANT` | `biolink:SequenceVariant` |
 
-Two mappings warrant comment. `ANATOMY` targets `GrossAnatomicalStructure` rather than the broader `AnatomicalEntity`, which the model itself documents as a grouping class whose concrete subclasses should be preferred; this also keeps `ANATOMY`, `CELL_TYPE`, and `CELLULAR_COMPONENT` disjoint, since all three descend from `AnatomicalEntity`. `BIOLOGICAL_PROCESS` targets `BiologicalProcessOrActivity` because `MolecularActivity` and `BiologicalProcess` are siblings beneath it, so the narrower class would exclude molecular activities. Type filtering at the resolver is hierarchical, so a mapping to a parent class also retrieves its descendants.
+Type filtering at the resolver is hierarchical, so a mapping to a parent class also retrieves its descendants. `ANATOMY`, `CELL_TYPE`, and `CELLULAR_COMPONENT` are mapped to the three concrete subclasses of `AnatomicalEntity` rather than to the parent, which keeps them disjoint.
 
-Several categories occurring in slide material have no admissible target, for two distinct reasons. Genomic regions such as chromosomal loci and repeat arrays, and sub-protein regions such as domains and termini, are expressible in the Biolink Model but declare no `id_prefixes`, and the related `genomic entity` and `epigenomic entity` classes are mixins; no identifier can be assigned to any of them. Transcripts and macromolecular complexes are, by contrast, fully specified in the model but are not indexed by the RENCI resolver. The first is a modelling limitation that no change of resolver would address; the second reflects the coverage of one service and may be met by another. Entities of these kinds are still extracted by the first module and are typed into the nearest available category, which is a known source of error.
+Some categories present in slide material cannot be normalized. Genomic regions and sub-protein regions have no Biolink class carrying identifiers, and transcripts and macromolecular complexes are not indexed by the resolver. Terms of these kinds are still extracted and assigned the nearest available type, which is a known source of error.
 
-**Normalization.** For each entity, candidates are retrieved concurrently from two resolvers (the RENCI name resolver and the ARAX entity normalizer), supplemented by a pass constrained to the Biolink class the entity's type maps to, which recovers correctly typed candidates that surface matching misses. The three result sets are unioned by CURIE and given a single ranking, with candidates that several resolvers agree on placed first. A language-model judge then selects the candidate whose type and meaning both match the entity, or abstains.
+**Normalization.** For each entity, candidates are retrieved concurrently from two resolvers (the RENCI name resolver and the ARAX entity normalizer), plus a pass constrained to the entity's Biolink class. The results are unioned by CURIE and ranked, with candidates that several resolvers agree on placed first. A language-model judge then selects the candidate whose type and meaning both match the entity, or abstains.
 
 ## Limitations and future work
 
 - **Gold annotation.** No gold set exists yet for NER or Normalization, so those heuristics are unvalidated. This is the highest-priority item.
 - **Hardware.** The pipeline requires a CUDA-capable NVIDIA GPU with 8 GB of VRAM and does not run on CPU or macOS. On the 8 GB target the language-model stages are at their computational floor.
-- **Retrieval inputs.** Normalization depends on two public resolvers, so retrieval recall can drift as those services change, and responses are not cached between runs. A lookup that times out is logged and treated as returning no candidates, which is indistinguishable downstream from a term genuinely having none; a run containing such failures is therefore not exactly reproducible.
-- **Type coverage.** Genomic regions and sub-protein regions cannot be normalized, for the reasons given under the entity type system. Terms of these kinds are still extracted and assigned the nearest available type, so they may receive a confident but incorrect identifier rather than an abstention.
+- **Retrieval inputs.** Normalization depends on two public resolvers, so recall can drift as those services change, and responses are not cached between runs. A failed lookup is logged and treated as returning no candidates, so a run affected by one is not exactly reproducible.
+- **Type coverage.** Genomic regions and sub-protein regions cannot be normalized, so they may receive an incorrect identifier rather than an abstention.
 - **Taxon.** Retrieval is not constrained by organism, so a term may be linked to a non-human orthologue.
 - **Modality coverage.** OCR handles slide decks, PDFs, and images; slide-deck support depends on a system LibreOffice installation.
 
