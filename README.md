@@ -141,28 +141,23 @@ Three design choices, all shaped by the 8 GB VRAM budget, are shared across the 
 
 **OCR.** GLM-OCR, a vision-language model, transcribes each slide. Decks and PDFs are rendered to page images, which preserves the layout that plain-text extraction would lose. Pages are transcribed in batches and streamed one batch at a time, so large files stay within memory.
 
-**NER.** Following ZeroTuneBio, each sentence passes through three steps over Llama-3.1-8B: extract all professional terms to maximize recall, keep only the terms grounded in the sentence to drop hallucinations, and classify each grounded term into one of ten types or none to recover precision.
+**NER.** Following ZeroTuneBio, each sentence passes through three steps over Llama-3.1-8B: extract all professional terms to maximize recall, keep only the terms grounded in the sentence to drop hallucinations, and classify each grounded term into one of seven types or none to recover precision.
 
 ### Entity types
 
-The ten entity types are derived from the Biolink Model (version 4.4.3), the schema underlying the NCATS Biomedical Data Translator. Each maps to a Biolink class that can carry an identifier, so the type assigned during extraction can be used directly to constrain retrieval.
+Five of the seven types map to a class in the Biolink Model, the schema underlying the NCATS Biomedical Data Translator. The mapping drives a type-constrained retrieval pass, which recovers correctly typed candidates that plain surface matching misses.
 
 | Entity type | Biolink class |
 |---|---|
 | `GENE` | `biolink:Gene` |
-| `PROTEIN` | `biolink:Protein` |
 | `DISEASE` | `biolink:Disease` |
-| `PHENOTYPIC_FEATURE` | `biolink:PhenotypicFeature` |
 | `CHEMICAL` | `biolink:ChemicalEntity` |
 | `CELL_TYPE` | `biolink:Cell` |
-| `CELLULAR_COMPONENT` | `biolink:CellularComponent` |
-| `ANATOMY` | `biolink:GrossAnatomicalStructure` |
-| `BIOLOGICAL_PROCESS` | `biolink:BiologicalProcessOrActivity` |
-| `SEQUENCE_VARIANT` | `biolink:SequenceVariant` |
+| `ANATOMY` | `biolink:AnatomicalEntity` |
+| `CHROMOSOMAL_LOCUS` | not mapped |
+| `EPIGENETIC_MODIFICATION` | not mapped |
 
-Type filtering at the resolver is hierarchical, so a mapping to a parent class also retrieves its descendants. `ANATOMY`, `CELL_TYPE`, and `CELLULAR_COMPONENT` are mapped to the three concrete subclasses of `AnatomicalEntity` rather than to the parent, which keeps them disjoint.
-
-Some categories present in slide material cannot be normalized. Genomic regions and sub-protein regions have no Biolink class carrying identifiers, and transcripts and macromolecular complexes are not indexed by the resolver. Terms of these kinds are still extracted and assigned the nearest available type, which is a known source of error.
+The last two have no Biolink class that carries identifiers, so they receive no type-constrained pass and rely on surface matching alone. Entities of those types normalize less reliably than the rest.
 
 **Normalization.** For each entity, candidates are retrieved concurrently from two resolvers (the RENCI name resolver and the ARAX entity normalizer), plus a pass constrained to the entity's Biolink class. The results are unioned by CURIE and ranked, with candidates that several resolvers agree on placed first. A language-model judge then selects the candidate whose type and meaning both match the entity, or abstains.
 
@@ -171,7 +166,7 @@ Some categories present in slide material cannot be normalized. Genomic regions 
 - **Gold annotation.** No gold set exists yet for NER or Normalization, so those heuristics are unvalidated. This is the highest-priority item.
 - **Hardware.** The pipeline requires a CUDA-capable NVIDIA GPU with 8 GB of VRAM and does not run on CPU or macOS. On the 8 GB target the language-model stages are at their computational floor.
 - **Retrieval inputs.** Normalization depends on two public resolvers, so recall can drift as those services change, and responses are not cached between runs. A failed lookup is logged and treated as returning no candidates, so a run affected by one is not exactly reproducible.
-- **Type coverage.** Genomic regions and sub-protein regions cannot be normalized, so they may receive an incorrect identifier rather than an abstention.
+- **Type coverage.** Two of the seven entity types have no Biolink mapping, so their candidates come from surface matching alone and are more often wrong.
 - **Taxon.** Retrieval is not constrained by organism, so a term may be linked to a non-human orthologue.
 - **Modality coverage.** OCR handles slide decks, PDFs, and images; slide-deck support depends on a system LibreOffice installation.
 
