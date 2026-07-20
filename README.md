@@ -73,18 +73,6 @@ mkdir Dataset
 
 Supported formats: `.pptx`, `.pdf`, `.png`, `.jpg`, `.jpeg`. A single file elsewhere on disk can also be passed directly, in which case `Dataset/` is not needed.
 
-### Step 6. Verify the setup
-
-Each check is fast and isolates one failure that would otherwise appear minutes into a run:
-
-```
-uv run python -c "import torch; print('CUDA:', torch.cuda.is_available())"
-uv run python -c "import shutil; print('LibreOffice:', shutil.which('soffice') or shutil.which('libreoffice'))"
-uv run python -c "import shutil; print('poppler:', shutil.which('pdftoppm'))"
-uv run python -c "from biomedcat.config import settings; print('token loaded:', bool(settings.hf_token))"
-```
-
-Expect `True`, two paths, and `True`. Any `None` or `False` points at the corresponding step above.
 
 ## Usage
 
