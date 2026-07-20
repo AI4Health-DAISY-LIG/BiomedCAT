@@ -88,7 +88,7 @@ _JUDGE_SYSTEM = (
 
 
 def judge_messages(entity: Entity, menu: str, format_instructions: str) -> list[dict[str, str]]:
-    """Choose the candidate whose type and meaning both match the entity, or 0 (NIL).
+    """Choose the candidate whose type, organism, and meaning all match the entity, or 0 (NIL).
 
     `menu` is the numbered candidate list, `format_instructions` the parser's schema.
     """
@@ -105,8 +105,11 @@ def judge_messages(entity: Entity, menu: str, format_instructions: str) -> list[
             f"- The chosen candidate's type (shown in [brackets]) MUST be consistent with the entity "
             f"type {entity.type}: e.g. a DISEASE maps to a Disease concept, a GENE to a Gene -- "
             f"never link a disease to a gene or protein.\n"
+            f"- The chosen candidate must match the organism under discussion. Unless the sentence "
+            f"indicates another species, assume human, and do not choose a candidate whose label "
+            f"names a different organism (for example 'mouse', 'Arabidopsis').\n"
             f"- Among candidates of the correct type, use the sentence for context to choose the best one.\n"
-            f"- Answer 0 only if NO candidate matches both the meaning and the type.\n\n"
+            f"- Answer 0 only if NO candidate matches the meaning, the type, and the organism.\n\n"
             f"{menu}\n\n"
             f"{format_instructions}"
         )},
