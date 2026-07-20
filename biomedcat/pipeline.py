@@ -5,10 +5,14 @@ only sequences them and assembles their typed outputs into a PipelineResult. The
 backend will import process_file() and wrap it in HTTP.
 """
 import sys
+import json
 import time
 import logging
 from pathlib import Path
+from dataclasses import asdict
+from datetime import datetime, timezone
 
+from biomedcat.config import settings
 from biomedcat.stages.ocr import run_ocr
 from biomedcat.stages.ner import run_ner
 from biomedcat.stages.norm import run_norm
@@ -51,6 +55,83 @@ def process_file(path: str) -> PipelineResult:
     )
 
 
+DATASET_DIR = Path(__file__).resolve().parents[1] / "Dataset"
+OUTPUT_DIR  = Path(__file__).resolve().parents[1] / "Output"
+SUPPORTED   = {".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
+
+
+class _ConsoleFilter(logging.Filter):
+    """Keep the console readable: stage-level progress and real problems only.
+
+    The stages log one line per sentence, per term, and per candidate lookup, which is the
+    detail you want when diagnosing a bad extraction and noise when watching a run. That
+    detail still reaches the log file; only the console is filtered.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.WARNING or record.name == logger.name
+
+
+def _setup_logging() -> None:
+    """Root at INFO so file handlers capture everything; the console handler filters."""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    console = logging.StreamHandler()
+    console.setFormatter(logging.Formatter("%(message)s"))   # no timestamps: the file has those
+    console.addFilter(_ConsoleFilter())
+    root.addHandler(console)
+
+
+def _start_file_log(log_path: Path) -> logging.FileHandler:
+    """Attach a per-file log capturing every stage's detail, unfiltered."""
+    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def _stop_file_log(handler: logging.FileHandler) -> None:
+    """Detach and close the per-file log, so the next file starts a fresh one."""
+    logging.getLogger().removeHandler(handler)
+    handler.close()
+
+
+def _write_json(result: PipelineResult, out_path: Path, elapsed: float) -> Path:
+    """Serialize one run to JSON.
+
+    Only `norm` is written as "entities": run_norm returns one record per input entity with
+    text/type/segment copied verbatim, so writing `ner` as well would duplicate every field
+    but the curie, leaving two representations of one fact that can drift apart.
+
+    The run block records what produced these answers. The two resolvers are live public
+    services, so a later run that differs must be distinguishable from a code regression.
+    """
+    payload = {
+        "schema_version": "1.0",
+        "run": {
+            "file": result.filename,
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "models": {
+                "ocr":  settings.glm_model_id,
+                "ner":  settings.llm_model_id,
+                "norm": settings.llm_model_id,
+            },
+            "resolvers": {
+                "renci":     settings.renci_url,
+                "arax":      settings.arax_url,
+                "api_limit": settings.api_limit,
+            },
+            "elapsed_s": round(elapsed, 1),
+        },
+        "slides":   [asdict(slide) for slide in result.ocr],
+        "entities": [asdict(e) for e in result.norm],
+    }
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return out_path
+
+
 def _print_results(result: PipelineResult) -> None:
     """Print the pipeline output to stdout (end-to-end driver; nothing is written to disk)."""
     print("\n" + "=" * 72)
@@ -78,12 +159,73 @@ def _print_results(result: PipelineResult) -> None:
 
 
 if __name__ == "__main__":
-    # End-to-end runner: process the bundled FSHD example (or a path argument) and print the
-    # results. Display only -- nothing is written to disk. Pass a file path to run on another file.
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    # Batch runner: process every supported file in Dataset/ that has no output yet, printing
+    # the results and writing each to Output/<stem>_BiomedCAT.json. Pass a file path to run on
+    # a single file instead.
+    _setup_logging()
 
-    default = Path(__file__).resolve().parents[1] / "Dataset" / "FSHD1.pptx"
-    path = sys.argv[1] if len(sys.argv) > 1 else str(default)
+    if len(sys.argv) > 1:
+        paths = [Path(sys.argv[1])]
+    else:
+        # Dataset/ holds the user's own slide files and is not distributed with the code, so
+        # both "missing" and "empty" are ordinary first-run states and get an instruction
+        # rather than a traceback.
+        if not DATASET_DIR.is_dir():
+            sys.exit(f"No Dataset/ directory at {DATASET_DIR}\n"
+                     f"Create it and add slide files, or run on a single file:\n"
+                     f"  python -m biomedcat.pipeline path/to/slides.pptx")
 
-    result = process_file(path)
-    _print_results(result)
+        paths = []
+        for p in sorted(DATASET_DIR.iterdir()):
+            if p.suffix.lower() in SUPPORTED:
+                paths.append(p)
+
+        if not paths:
+            sys.exit(f"No supported files in {DATASET_DIR}\n"
+                     f"Supported formats: {', '.join(sorted(SUPPORTED))}")
+
+    OUTPUT_DIR.mkdir(exist_ok=True)
+
+    processed, skipped, failures = 0, 0, []
+
+    for path in paths:
+        out_path = OUTPUT_DIR / f"{path.stem}_BiomedCAT.json"
+
+        # Skip work already done: a full run costs minutes of GPU, so the loop is resumable.
+        # Delete the output file to force a re-run.
+        if out_path.exists():
+            logger.info("skip %s (%s already exists)", path.name, out_path.name)
+            skipped += 1
+            continue
+
+        # The log is opened before the work and closed in finally, so a failed run still leaves
+        # its log behind: that is exactly when the per-sentence detail is worth having.
+        file_log = _start_file_log(OUTPUT_DIR / f"{path.stem}_BiomedCAT.log")
+
+        try:
+            t0 = time.perf_counter()
+            result = process_file(str(path))
+            elapsed = time.perf_counter() - t0
+
+            # Print before writing: after minutes of GPU time the result exists only in memory,
+            # so a failed write must not also cost the visible output.
+            _print_results(result)
+            print(f"\nWrote {_write_json(result, out_path, elapsed)}")
+            processed += 1
+
+        except Exception:
+            # One unreadable file must not abandon the rest of the batch. Each stage frees its
+            # own model in a finally block, so the GPU is clean for the next file either way.
+            # logger.exception keeps the traceback, and the summary below makes a failure
+            # buried in a long log impossible to miss.
+            logger.exception("FAILED %s", path.name)
+            failures.append(path.name)
+
+        finally:
+            _stop_file_log(file_log)
+
+    print(f"\nBatch complete: {processed} processed, {skipped} skipped, {len(failures)} failed")
+    for name in failures:
+        print(f"  FAILED: {name}")
+
+    sys.exit(1 if failures else 0)

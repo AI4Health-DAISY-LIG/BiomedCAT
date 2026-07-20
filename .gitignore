@@ -9,3 +9,6 @@ __pycache__/
 
 # Data (not committed: large / possibly copyrighted slide material)
 Dataset/
+
+# Pipeline output (contains full transcriptions of the slide material above)
+Output/

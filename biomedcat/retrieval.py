@@ -6,12 +6,20 @@ from biomedcat.config import settings
 from biomedcat.types import Candidate
 
 logger = logging.getLogger(__name__)
+# Each entity type maps to a Biolink class that is non-mixin and declares id_prefixes, so a
+# resolved identifier can actually carry it. CURIEs verified against the live resolver, since
+# an unrecognised biolink_type returns HTTP 200 with an empty list rather than an error.
 TYPE_TO_BIOLINK = {
-    "GENE":      "biolink:Gene",
-    "DISEASE":   "biolink:Disease",
-    "CHEMICAL":  "biolink:ChemicalEntity",
-    "CELL_TYPE": "biolink:Cell",
-    "ANATOMY":   "biolink:AnatomicalEntity",
+    "GENE":               "biolink:Gene",
+    "PROTEIN":            "biolink:Protein",
+    "DISEASE":            "biolink:Disease",
+    "PHENOTYPIC_FEATURE": "biolink:PhenotypicFeature",
+    "CHEMICAL":           "biolink:ChemicalEntity",
+    "CELL_TYPE":          "biolink:Cell",
+    "CELLULAR_COMPONENT": "biolink:CellularComponent",
+    "ANATOMY":            "biolink:GrossAnatomicalStructure",   # concrete subclass, disjoint from the two above
+    "BIOLOGICAL_PROCESS": "biolink:BiologicalProcessOrActivity", # umbrella: process and molecular activity are siblings
+    "SEQUENCE_VARIANT":   "biolink:SequenceVariant",             # RENCI does not index variants; ARAX covers this type
 }
 
 _SESSION = requests.Session()
