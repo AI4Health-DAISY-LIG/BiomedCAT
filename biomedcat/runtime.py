@@ -1,4 +1,7 @@
+import logging
 from typing import List, Dict
+
+logger = logging.getLogger(__name__)
 
 class InferenceEngine:
     """
@@ -14,4 +17,5 @@ class InferenceEngine:
         """
         Génère une réponse à partir des messages fournis.
         """
+        # L'implémentation n'est pas fournie dans l'extrait original.
         pass
