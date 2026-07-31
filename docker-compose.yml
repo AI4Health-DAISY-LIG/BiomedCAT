@@ -1,0 +1,38 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biomedcat_pipeline
+    restart: always
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=llama3.1
+    volumes:
+      # Montage des dossiers de l'utilisateur pour la persistance
+      - ./Dataset:/app/data/Dataset
+      - ./Output:/app/data/Output
+    extra_hosts:
+      # Permet au conteneur de communiquer avec l'hôte (Ollama)
+      - "host.docker.internal:host-gateway"
+    networks:
+      - biomedcat_network
+
+  frontend:
+    image: node:20-slim
+    container_name: biomedcat_frontend
+    working_dir: /app/frontend
+    volumes:
+      - ./frontend:/app/frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    networks:
+      - biomedcat_network
+    depends_on:
+      - pipeline
+
+networks:
+  biomedcat_network:
+    driver: bridge

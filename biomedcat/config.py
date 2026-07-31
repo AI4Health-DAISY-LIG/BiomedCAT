@@ -1,35 +1,26 @@
-"""Runtime configuration for the BiomedCAT core.
-
-Holds only what varies per deployment or must stay secret: the model
-identifiers, the even external resolver endpoints, and the Hugging Face token.
-Fixed implementation details (generation lengths, CUDA flags, batch size) live
-as constants beside the code that uses them, not here.
-
-Any field can be overridden by a BIOMEDCAT_<NAME> environment variable or a line
-in a local .env file, so the service is retuned without editing source.
-"""
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
+import os
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="BIOMEDCAT_", env_file=".env", extra="ignore")
+    """
+    Configuration de l'application BiomedCAT.
+    Les variables peuvent être surchargées via les variables d'environnement Docker.
+    """
+    # URL de l'instance Ollama (par défaut vers l'hôte via le pont Docker)
+    ollama_url: str = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+    
+    # Modèle utilisé pour l'inférence
+    model_name: str = os.getenv("OLLAMA_MODEL", "llama3.1")
+    
+    # Chemins de travail (montés via Docker volumes)
+    dataset_path: str = "/app/data/Dataset"
+    output_path: str = "/app/data/Output"
+    
+    # Configuration du pipeline
+    max_retries: int = 3
+    timeout: int = 300  # 5 minutes
 
-    # Hugging Face token for the gated Llama repo (set BI_HF_TOKEN in .env).
-    hf_token: str | None = None
-
-    # Ollama Configuration.
-    # In Docker, we use 'host.docker.internal' to reach the host machine's Ollama service.
-    ollama_url: str = "http://host.docker.internal:11434"
-
-    # Models.
-    glm_model_id: str = "zai-org/GLM-OCR"                    # OCR (stage 1)
-    llm_model_id: str = "meta-llama/Llama-3.1-8B-Instruct"   # NER + normalization (stages 2-3)
-
-    # Normalization resolvers.
-    renci_url: str = "https://name-resolution-sri.renci.org/lookup"
-    arax_url: str = "https://arax.ncats.io/api/arax/v1.4/entity"
-    api_limit: int = 10                # max candidates pulled per resolver
-    max_concurrent_requests: int = 10  # cap on in-flight retrieval requests
-
+    class Config:
+        env_file = ".env"
 
 settings = Settings()
