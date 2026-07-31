@@ -1,8 +1,12 @@
-# BiomedCAT
+# BiomedCAT - turning your scientific hypotheses in a machine readible and explainable format. 
 
-BiomedCAT converts biomedical presentation slides into knowledge-base-grounded entities: it reads the text off each slide, extracts the typed biomedical entities, and links each one to a standard identifier (CURIE) in a biomedical knowledge base.
+**All your hypotheses and computations stay local.** 
 
-Knowledge-graph construction methods assume clean plain text such as PubMed abstracts, but biomedical researchers communicate through slides that mix text, figures, tables, and charts, where a single corrupted character can invalidate a gene symbol and break downstream extraction. BiomedCAT treats input modality as a first-class problem. The working domain is facioscapulohumeral muscular dystrophy (FSHD).
+BiomedCAT converts biomedical presentation slides into knowledge-base-grounded entities: it reads the text off each slide, identify logics on specific scientific images and tables, extracts the typed biomedical entities, and links each one to a standard identifier (CURIE) in a biomedical knowledge base.
+
+Knowledge-graph construction methods assume clean plain text such as PubMed abstracts, but biomedical researchers communicate through slides that mix text, figures, tables, and charts, where a single corrupted character can invalidate a gene symbol and break downstream extraction. BiomedCAT treats input modality as a first-class problem. 
+
+We've currently tested our tool on several different slide decks from researchers on facioscapulohumeral muscular dystrophy (FSHD).
 
 ![pipeline](docs/pipeline.png)
 
@@ -26,7 +30,7 @@ The pipeline runs in three stages, each an independent module with a single entr
 
 Access to `meta-llama/Llama-3.1-8B-Instruct` is gated: request it on [its Hugging Face page](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) and accept the license. Approval is not immediate and can take hours, so start this before anything else. While waiting, create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens); it is needed in step 4.
 
-### Step 1. Install uv
+### Step 1. Install uv -- to do in the wrapper
 
 | Platform | Command |
 |---|---|
@@ -34,16 +38,16 @@ Access to `meta-llama/Llama-3.1-8B-Instruct` is gated: request it on [its Huggin
 | Windows (PowerShell) | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
 | Any (via pip) | `pip install uv` |
 
-### Step 2. Install poppler and LibreOffice
+<!-- ### Step 2. Install poppler and LibreOffice
 
 | Platform | Command |
 |---|---|
 | Linux (Debian / Ubuntu) | `sudo apt install poppler-utils libreoffice` |
 | Windows | Install LibreOffice from [libreoffice.org](https://www.libreoffice.org/), then install poppler (for example `conda install -c conda-forge poppler`, or download the prebuilt binaries). |
 
-On Windows, **both** tools must be on `PATH`. LibreOffice is located by searching `PATH` for `soffice`, and its installer does not add itself, so add its `program` directory (typically `C:\Program Files\LibreOffice\program`) manually. Poppler's `bin` directory needs the same treatment.
+On Windows, **both** tools must be on `PATH`. LibreOffice is located by searching `PATH` for `soffice`, and its installer does not add itself, so add its `program` directory (typically `C:\Program Files\LibreOffice\program`) manually. Poppler's `bin` directory needs the same treatment. -->
 
-### Step 3. Clone the repository and build the environment
+### Step 3. Clone the repository and build the environment -- to do in the wrapper
 
 ```
 git clone https://github.com/AI4Health-DAISY-LIG/BiomedCAT.git
@@ -53,19 +57,19 @@ uv sync
 
 `uv sync` reproduces the exact dependency versions from `pyproject.toml` and `uv.lock`. The lockfile pins the CUDA 11.8 build of PyTorch; if your GPU needs a different CUDA version, adjust the `pytorch-cu118` index in `pyproject.toml` before running it.
 
-### Step 4. Add your Hugging Face token
+<!-- ### Step 4. Add your Hugging Face token
 
-Create a `.env` file in the repository root, next to `pyproject.toml`:
+Create a `.env` file in the repository root, next to `pyproject.toml`: uv venv
 
 ```
 BIOMEDCAT_HF_TOKEN=hf_your_token_here
 ```
 
-This file is read relative to the directory the pipeline is launched from, so **run every command below from the repository root**. Launching from elsewhere leaves the token unset and the run fails at model download.
+This file is read relative to the directory the pipeline is launched from, so **run every command below from the repository root**. Launching from elsewhere leaves the token unset and the run fails at model download. -->
 
-### Step 5. Add your presentations
+### Step 5. Add your presentations -- to do in the wrapper
 
-Input files are not distributed with the code. Create a `Dataset/` directory in the repository root and place the presentations to process inside it:
+Input files are not distributed with the code. Create a `data/` directory in the repository root and place the presentations to process inside it:
 
 ```
 mkdir Dataset
@@ -76,13 +80,13 @@ Supported formats: `.pptx`, `.pdf`, `.png`, `.jpg`, `.jpeg`. A single file elsew
 
 ## Usage
 
-Process every file in `Dataset/` that has no output yet:
+Process every file in `data/` that has no output yet:
 
 ```
 uv run python -m biomedcat.pipeline
 ```
 
-Each file produces two artefacts in `Output/`, which is created if absent: `<name>_BiomedCAT.json` holding the results, and `<name>_BiomedCAT.log` holding the full per-sentence trace of the run. A file whose JSON output already exists is skipped, so the batch is resumable across sessions; delete an output file to process that presentation again.
+Each file produces two artefacts in `output/`, which is created if absent: `<name>_BiomedCAT.json` holding the results, and `<name>_BiomedCAT.log` holding the full per-sentence trace of the run. A file whose JSON output already exists is skipped, so the batch is resumable across sessions; delete an output file to process that presentation again.
 
 To run on a single file anywhere on disk instead:
 
