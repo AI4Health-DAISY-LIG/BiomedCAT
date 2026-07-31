@@ -8,7 +8,8 @@ __pycache__/
 .venv/
 
 # Data (not committed: large / possibly copyrighted slide material)
-Dataset/
+data/
 
 # Pipeline output (contains full transcriptions of the slide material above)
-Output/
+output/
+.aider*
