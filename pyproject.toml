@@ -1,40 +1,22 @@
 [project]
 name = "biomedcat"
 version = "0.1.0"
-description = "Three-stage OCR → NER → Normalization pipeline for biomedical slides (FSHD)."
+description = "Biomedical Entity Extraction and Normalization Pipeline"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "torch==2.6.0",
-    "transformers==5.9.0",
-    "huggingface-hub==1.16.4",
-    "pydantic==2.12.5",
-    "pydantic-settings==2.13.1",
-    "pillow==12.1.1",
-    "pdf2image==1.17.0",
-    "spacy==3.7.5",
-    "scispacy==0.6.2",
-    "langchain-core==0.3.83",
-    "requests==2.32.5",
-    "en-core-sci-sm",
-    "httpx==0.27.2",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    # Add other dependencies used by your stages here (e.g., python-pptx, pdf2image)
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0.0",
 ]
 
 [build-system]
-requires = ["h_hatchling"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["biomedcat"]
-
-[dependency-groups]
-dev = ["ruff", "mypy", "pytest"]
-
-[[tool.uv.index]]
-name = "pytorch-cu118"
-url = "https://download.pytorch.org/whl/cu118"
-explicit = true
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu118" }
-en-core-sci-sm = { url = "https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz" }
