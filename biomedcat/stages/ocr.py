@@ -42,7 +42,7 @@ def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
         raise RuntimeError("LibreOffice (soffice) not found; required to convert PPTX to PDF.")
 
     subprocess.run(
-        [soffunffice, "--headless", "--convert-to", "pdf", "--outdir", out_dir, file_path],
+        [soffice, "--headless", "--convert-to", "pdf", "--outdir", out_dir, file_path],
         check=True, capture_output=True, timeout=180,
     )
 
