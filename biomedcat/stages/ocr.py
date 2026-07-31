@@ -11,11 +11,20 @@ from pathlib import Path
 from biomedcat.config import settings
 from biomedcat.runtime import free_gpu   # importing runtime bootstraps the CUDA env before torch
 from biomedcat.types import Slide
-import torch
-from PIL import Image
-from transformers import AutoProcessor, GlmOcrForConditionalGeneration
-from pdf2image import convert_from_path, pdfinfo_from_path
 
+# Tentative d'importation des dépendances lourdes avec un message d'erreur explicite
+try:
+    import torch
+    from PIL import Image
+    from transformers import AutoProcessor, GlmOcrForConditionalGeneration
+    from pdf2image import convert_from_path, pdfinfo_from_path
+except ImportError as e:
+    raise ImportError(
+        f"\n\n[ERREUR DÉPENDANCE MANQUANTE] : {e}\n"
+        "L'OCR local nécessite des bibliothèques spécifiques pour fonctionner.\n"
+        "Veuillez exécuter la commande suivante dans votre terminal pour réparer l'environnement :\n"
+        "pip install torch torchvision torchaudio transformers pillow pdf2image\n"
+    ) from None
 
 GLM_PROMPT = "Text Recognition:"   # the instruction GLM-OCR was trained to transcribe under
 GLM_MAX_TOKENS = 1536              # cap on tokens generated per image
@@ -33,7 +42,7 @@ def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
         raise RuntimeError("LibreOffice (soffice) not found; required to convert PPTX to PDF.")
 
     subprocess.run(
-        [soffice, "--headless", "--convert-to", "pdf", "--outdir", out_dir, file_path],
+        [soffunffice, "--headless", "--convert-to", "pdf", "--outdir", out_dir, file_path],
         check=True, capture_output=True, timeout=180,
     )
 
@@ -58,7 +67,7 @@ def _to_pdf_or_image(file_path: str, tmp_dir: str) -> tuple[str, object]:
 
 
 def _iter_batches(kind: str, source):
-    """Yield lists of up to GLM_BATCH_SIZE PIL images, rasterizing PDF pages on demand.
+    """Yield lists of up: GLM_BATCH_SIZE PIL images, rasterizing PDF pages on demand.
 
     Rasterizing page-by-page rather than the whole PDF at once keeps only one batch of
     images in memory, so a 300-page deck costs the same RAM as an 8-page one.
