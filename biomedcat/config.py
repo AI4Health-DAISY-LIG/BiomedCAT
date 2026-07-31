@@ -1,7 +1,7 @@
 """Runtime configuration for the BiomedCAT core.
 
 Holds only what varies per deployment or must stay secret: the model
-identifiers, the external resolver endpoints, and the Hugging Face token.
+identifiers, the even external resolver endpoints, and the Hugging Face token.
 Fixed implementation details (generation lengths, CUDA flags, batch size) live
 as constants beside the code that uses them, not here.
 
@@ -14,8 +14,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BIOMEDCAT_", env_file=".env", extra="ignore")
 
-    # Hugging Face token for the gated Llama repo (set BIOMEDCAT_HF_TOKEN in .env).
+    # Hugging Face token for the gated Llama repo (set BI_HF_TOKEN in .env).
     hf_token: str | None = None
+
+    # Ollama Configuration.
+    # In Docker, we use 'host.docker.internal' to reach the host machine's Ollama service.
+    ollama_url: str = "http://host.docker.internal:11434"
 
     # Models.
     glm_model_id: str = "zai-org/GLM-OCR"                    # OCR (stage 1)
