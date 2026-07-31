@@ -3,6 +3,15 @@ from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
+def free_gpu():
+    """
+    Fonction factice pour maintenir la compatibilité avec l'ancien code.
+    Comme nous utilisons Ollama (service externe) pour le NER/Norm, 
+    la gestion de la VRAM est déléguée au service. Pour l'OCR local, 
+    le nettoyage est déjà géré par 'del' dans le stage.
+    """
+    pass
+
 class InferenceEngine:
     """
     Moteur d'inférence léger utilisant l'API HTTP d'Ollama.
