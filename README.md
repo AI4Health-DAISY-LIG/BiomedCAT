@@ -8,17 +8,17 @@ Knowledge-graph construction methods assume clean plain text such as PubMed abst
 
 The pipeline runs in three stages, each an independent module with a single entry point that manages its own model lifecycle:
 
-1. **OCR** — slide images to text (GLM-OCR).
-2. **NER** — text to typed biomedical entities (Llama-3.1-8B, zero-shot).
-3. **Normalization** — entities to knowledge-base identifiers (retrieval plus a language-model judge).
+1. **OCR**: slide images to text (GLM-OCR).
+2. **NER**: text to typed biomedical entities (Llama-3.1-8B, zero-shot).
+3. **Normalization**: entities to knowledge-base identifiers (retrieval plus a language-model judge).
 
 ## Requirements
 
-**Hardware.** A CUDA-capable **NVIDIA GPU with at least 8 GB of VRAM**. The language models run in 4-bit CUDA quantization, so an NVIDIA GPU is required. The pipeline therefore runs on **Linux or Windows** machines that have such a GPU. **macOS is not supported**, because it does not provide NVIDIA CUDA.
+**Hardware**: a CUDA-capable **NVIDIA GPU with at least 8 GB of VRAM**. The language models run in 4-bit CUDA quantization, so an NVIDIA GPU is required. The pipeline therefore runs on **Linux or Windows** machines that have such a GPU. **macOS is not supported**, because it does not provide NVIDIA CUDA.
 
-**Disk.** Roughly 25 GB free: about 5 GB for the Python environment and about 20 GB for the model weights, which are downloaded once on the first run and cached in `~/.cache/huggingface`.
+**Disk**: roughly 27 GB free: about 8 GB for the Python environment and about 18 GB for the model weights, which are downloaded once on the first run and cached in `~/.cache/huggingface`.
 
-**Software.** [uv](https://docs.astral.sh/uv/) as the dependency manager, plus poppler and LibreOffice as system tools. Python itself is provisioned by uv and does not need to be installed separately.
+**Software**: [uv](https://docs.astral.sh/uv/) as the dependency manager, plus poppler and LibreOffice as system tools. Python itself is provisioned by uv and does not need to be installed separately.
 
 ## Setup
 
@@ -63,7 +63,7 @@ BIOMEDCAT_HF_TOKEN=hf_your_token_here
 
 This file is read relative to the directory the pipeline is launched from, so **run every command below from the repository root**. Launching from elsewhere leaves the token unset and the run fails at model download.
 
-### Step 5. Add your slides
+### Step 5. Add your presentations
 
 Input files are not distributed with the code. Create a `Dataset/` directory in the repository root and place the presentations to process inside it:
 
@@ -110,15 +110,30 @@ Facioscapulohumeral muscular dystrophy (FSHD)
   EPIGENETIC_MODIFICATION  methylation
   ...
 
---- Normalization (28/31 linked) ---
-  DISEASE   FSHD           -> MONDO:0008030
-  GENE      DUX4 protein   -> NCBIGene:100288687
+--- Normalization (29/31 linked) ---
+  DISEASE                  FSHD                               -> MONDO:0001347
+  GENE                     DUX4 protein                       -> NCBIGene:100288687
+  CHROMOSOMAL_LOCUS        D4D4 array                         -> NIL
   ...
 
 Wrote /path/to/BiomedCAT/Output/FSHD1_BiomedCAT.json
 ```
 
-The final `Wrote` line confirms the run completed and names the file produced. In the JSON, an entity the judge could not link has `"curie": null` rather than being omitted.
+The final `Wrote` line confirms the run completed and names the file produced. An entity the judge declined to link prints as `NIL` and is written to the JSON as `"curie": null` rather than being omitted.
+
+## Web console
+
+The results of a run can be read in a browser instead of the terminal. The console is a read-only interface over `Output/`: it displays the presentations processed so far, and for any one of them the transcribed slides, the extracted entities with their assigned identifiers, the proportion resolved, and the time each stage consumed. A run can be downloaded as its original JSON or as a CSV of entities.
+
+The console does not run the pipeline. A presentation submitted through it is copied into `Dataset/`, where the next invocation of the pipeline collects it. It needs Node.js 20.9 or later and neither a GPU nor the model weights.
+
+```
+cd frontend
+npm install
+npm run dev
+```
+
+The console is then served at `http://localhost:3000`. Its architecture is documented in `BiomedCAT_Frontend_Documentation.tex`.
 
 ## Troubleshooting
 
@@ -135,17 +150,17 @@ The final `Wrote` line confirms the run completed and names the file produced. I
 
 Three design choices, all shaped by the 8 GB VRAM budget, are shared across the stages:
 
-- **4-bit quantization** shrinks Llama-3.1-8B to roughly 5.7 GB so it fits the card.
+- **4-bit quantization**: shrinks Llama-3.1-8B to roughly 5.7 GB so it fits the card.
 - **Scale-to-zero lifecycle**: each stage loads its model, processes the input, and frees it, so the three models share one small GPU.
-- **Determinism**: greedy decoding plus rule-based text steps (segmentation, grounding, deduplication) make runs reproducible; non-determinism is confined to the model calls.
+- **Determinism**: greedy decoding, together with text steps that are deterministic rather than sampled (scispaCy sentence segmentation, grounding, deduplication), makes a run reproducible on the same inputs.
 
-**OCR.** GLM-OCR, a vision-language model, transcribes each slide. Decks and PDFs are rendered to page images, which preserves the layout that plain-text extraction would lose. Pages are transcribed in batches and streamed one batch at a time, so large files stay within memory.
+**OCR**: GLM-OCR, a vision-language model, transcribes each slide. Presentations and PDFs are rendered to page images, which preserves the layout that plain-text extraction would lose. Pages are transcribed in batches and streamed one batch at a time, so large files stay within memory.
 
-**NER.** Following ZeroTuneBio, each sentence passes through three steps over Llama-3.1-8B: extract all professional terms to maximize recall, keep only the terms grounded in the sentence to drop hallucinations, and classify each grounded term into one of seven types or none to recover precision.
+**NER**: following ZeroTuneBio, each sentence passes through four steps. Three query Llama-3.1-8B: extract all professional terms to maximize recall, classify each term into one of seven types or none to recover precision, and finally discard only those typings the model flags as wrong. Between the first two, a rule-based grounding step keeps only the terms that appear verbatim in the sentence, which removes hallucinated spans without a model call.
 
 ### Entity types
 
-Five of the seven types map to a class in the Biolink Model, the schema underlying the NCATS Biomedical Data Translator. The mapping drives a type-constrained retrieval pass, which recovers correctly typed candidates that plain surface matching misses.
+Five of the seven types map to a class in the Biolink Model. The mapping drives a type-constrained retrieval pass, which recovers correctly typed candidates that surface matching misses.
 
 | Entity type | Biolink class |
 |---|---|
@@ -159,20 +174,25 @@ Five of the seven types map to a class in the Biolink Model, the schema underlyi
 
 The last two have no Biolink class that carries identifiers, so they receive no type-constrained pass and rely on surface matching alone. Entities of those types normalize less reliably than the rest.
 
-**Normalization.** For each entity, candidates are retrieved concurrently from two resolvers (the RENCI name resolver and the ARAX entity normalizer), plus a pass constrained to the entity's Biolink class. The results are unioned by CURIE and ranked, with candidates that several resolvers agree on placed first. A language-model judge then selects the candidate whose type and meaning both match the entity, or abstains.
+**Normalization**: each entity is looked up in two resolvers, the RENCI name resolver and the ARAX entity normalizer, together with a further pass constrained to the entity's Biolink class where one is mapped. Terms are resolved concurrently, one thread per term, so the network waits overlap. The results are unioned by CURIE and ranked, with candidates that several resolvers agree on placed first. A language-model judge then selects the candidate whose type and meaning both match the entity, or abstains.
 
 ## Limitations and future work
 
-- **Gold annotation.** No gold set exists yet for NER or Normalization, so those heuristics are unvalidated. This is the highest-priority item.
-- **Hardware.** The pipeline requires a CUDA-capable NVIDIA GPU with 8 GB of VRAM and does not run on CPU or macOS. On the 8 GB target the language-model stages are at their computational floor.
-- **Retrieval inputs.** Normalization depends on two public resolvers, so recall can drift as those services change, and responses are not cached between runs. A failed lookup is logged and treated as returning no candidates, so a run affected by one is not exactly reproducible.
-- **Type coverage.** Two of the seven entity types have no Biolink mapping, so their candidates come from surface matching alone and are more often wrong.
-- **Taxon.** Retrieval is not constrained by organism, so a term may be linked to a non-human orthologue.
-- **Modality coverage.** OCR handles slide decks, PDFs, and images; slide-deck support depends on a system LibreOffice installation.
+- **Gold annotation**: no gold set exists yet for NER or Normalization.
+- **Hardware**: the pipeline requires a CUDA-capable NVIDIA GPU with 8 GB of VRAM and does not run on CPU or macOS. On the 8 GB target the language-model stages are at their computational floor.
+- **Retrieval inputs**: Normalization depends on two public resolvers, so recall can drift as those services change, and responses are not cached between runs. A failed lookup is logged and treated as returning no candidates, so a run affected by one is not exactly reproducible.
 
 ## Repository layout
 
-The core is an installable Python package, `biomedcat`, organized one module per concern:
+```
+biomedcat/     the pipeline, an installable Python package
+frontend/      the web console (Next.js, TypeScript)
+docs/          the pipeline figure
+Dataset/       input presentations, created by the user
+Output/        one JSON and one log per processed presentation, created by the pipeline
+```
+
+The pipeline package is organized one module per concern:
 
 - `config.py`: deployment configuration (model identifiers, resolver endpoints, the Hugging Face token), read from the environment or a local `.env` file.
 - `types.py`: the typed data model passed between stages (Slide, Entity, Candidate, NormalizedEntity) and the entity-type vocabulary.
@@ -181,3 +201,5 @@ The core is an installable Python package, `biomedcat`, organized one module per
 - `stages/ocr.py`, `stages/ner.py`, `stages/norm.py`: the three stages, each with a single entry point.
 - `retrieval.py`: the RENCI and ARAX resolvers behind a common interface, and the mapping from entity type to Biolink class that drives the type-constrained pass.
 - `pipeline.py`: the orchestrator, which runs one file through the three stages and drives the batch over `Dataset/`.
+
+The console under `frontend/` shares no code with the package. The two are coupled only by the location of `Dataset/` and `Output/` and by the `<name>_BiomedCAT.json` naming convention.
