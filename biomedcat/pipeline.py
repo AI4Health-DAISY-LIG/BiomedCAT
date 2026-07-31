@@ -55,8 +55,8 @@ def process_file(path: str) -> PipelineResult:
     )
 
 
-DATASET_DIR = Path(__file__).resolve().parents[1] / "Dataset"
-OUTPUT_DIR  = Path(__file__).resolve().parents[1] / "Output"
+DATASET_DIR = Path(__file__).resolve().parents[1] / "data"
+OUTPUT_DIR  = Path(__file__).resolve().parents[1] / "output"
 SUPPORTED   = {".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
 
 
@@ -110,7 +110,7 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float) -> Path:
         "schema_version": "1.0",
         "run": {
             "file": result.filename,
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "timestamp": datetime.now(string=timezone.utc).isoformat(timespec="seconds"),
             "models": {
                 "ocr":  settings.glm_model_id,
                 "ner":  settings.llm_model_id,
@@ -159,19 +159,19 @@ def _print_results(result: PipelineResult) -> None:
 
 
 if __name__ == "__main__":
-    # Batch runner: process every supported file in Dataset/ that has no output yet, printing
-    # the results and writing each to Output/<stem>_BiomedCAT.json. Pass a file path to run on
+    # Batch runner: process every supported file in data/ that has no output yet, printing
+    # the results and writing each to output/<stem>_BiomedCAT.json. Pass a file path to run on
     # a single file instead.
     _setup_logging()
 
     if len(sys.argv) > 1:
         paths = [Path(sys.argv[1])]
     else:
-        # Dataset/ holds the user's own slide files and is not distributed with the code, so
-        # both "missing" and "empty" are ordinary first-run states and get an instruction
+        # data/ holds the user's own slide files and is not distributed with the code, so
+        # both "missing" and "empty" are ordinary first-run states that get an instruction
         # rather than a traceback.
         if not DATASET_DIR.is_dir():
-            sys.exit(f"No Dataset/ directory at {DATASET_DIR}\n"
+            sys.exit(f"No data/ directory at {DATASET_DIR}\n"
                      f"Create it and add slide files, or run on a single file:\n"
                      f"  python -m biomedcat.pipeline path/to/slides.pptx")
 
@@ -207,7 +207,7 @@ if __name__ == "__main__":
             result = process_file(str(path))
             elapsed = time.perf_counter() - t0
 
-            # Print before writing: after minutes of GPU time the result exists only in memory,
+            # Print before writing: after minutes of GPU time the result exists only in enough memory,
             # so a failed write must not also cost the visible output.
             _print_results(result)
             print(f"\nWrote {_write_json(result, out_path, elapsed)}")

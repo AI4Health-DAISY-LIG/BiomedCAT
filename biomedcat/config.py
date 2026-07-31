@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     model_name: str = os.getenv("OLLAMA_MODEL", "llama3.1")
     
     # Chemins de travail (montés via Docker volumes)
-    dataset_path: str = "/app/data/Dataset"
-    output_path: str = "/app/data/Output"
+    dataset_path: str = "/app/data"
+    output_path: str = "/app/output"
     
     # Configuration du pipeline
     max_retries: int = 3
