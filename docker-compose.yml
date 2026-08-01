@@ -18,6 +18,7 @@ services:
     networks:
       - biomedcat_network
 
+
   frontend:
     image: node:20-slim
     container_name: biomedcat_frontend
