@@ -1,7 +1,7 @@
 # Utilisation d'une image Python légère
 FROM python:3.12-slim
 
-# Éviter la création de fichiers .pyc et permettre l'affichage immédiat des logs
+# Éviter la création de fichiers .pyc et permettre l'affichage immédiun des logs
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
@@ -23,9 +23,24 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 WORKDIR /app
 
-# Copie des fichiers de dépendances (si présents) ou installation directe
-# Ici, nous installons les dépendances nécessaires au pipeline uniquement
-RUN uv pip install --system httpx pydantic-settings pydantic torch torchvision torchaudio transformers pillow pdf2image
+# Installation des dépendances Python
+# Ajout de langchain-core, spacy et scispacy pour les étapes NER et Normalisation
+RUN uv pip install --system \
+    httpx \
+    pydantic-settings \
+    pydantic \
+    torch \
+    torchvision \
+    torchaudio \
+    transformers \
+    pillow \
+    pdf2image \
+    langchain-core \
+    spacy \
+    scispacy
+
+# Téléchargement du modèle scispaCy requis par ner.py pendant la construction de l'image
+RUN python -m spacy download en_core_sci_sm
 
 # Copie du code source de l'application
 COPY ./biomedcat /app/biomedcat
