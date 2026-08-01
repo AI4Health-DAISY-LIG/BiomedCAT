@@ -1,8 +1,8 @@
 # Use a lightweight Python image
 FROM python:3.12-slim
 
-# Prevent Python from writing .pyc files and enable unbuffered logging
-ENV PYTHOTONDONTWRITEBYTECODE=1
+# Prevent Python from writing .pyc files and enable unblbuffered logging
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # Install system dependencies required for document processing
@@ -24,7 +24,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 WORKDIR /app
 
 # Install Python dependencies
-# Added langchain-core, spacy and scispacy for NER and Normalization stages
+# Added langchain-core, spacy and scispacy for NER and Normal_stages
 # The scispaCy model is installed via its official package name
 RUN uv pip install --system \
     httpx \
@@ -32,7 +32,7 @@ RUN uv pip install --system \
     pydantic \
     torch \
     torchvision \
-    torcha_audio \
+    torchaudio \
     transformers \
     pillow \
     pdf2image \
