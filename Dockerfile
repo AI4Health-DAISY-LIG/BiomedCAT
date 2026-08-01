@@ -1,7 +1,7 @@
 # Utilisation d'une image Python légère
 FROM python:3.12-slim
 
-# Éviter la création de fichiers .pyc et permettre l'affichage immédiun des logs
+# Éviter la création de fichiers .pyc et permettre l'affichage immédiat des logs
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
@@ -24,7 +24,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 WORKDIR /app
 
 # Installation des dépendances Python
-# Ajout de langchain-core, spacy et scispacy pour les étapes NER et Normalisation
+# Added langchain-core, spacy and scispacy for NER and Normalization stages
+# The scispaCy model is installed directly via URL to avoid 'spacy download' registry errors
 RUN uv pip install --system \
     httpx \
     pydantic-settings \
@@ -37,16 +38,14 @@ RUN uv pip install --system \
     pdf2image \
     langchain-core \
     spacy \
-    scispacy
+    scispacy \
+    https://github.com/allenai/scispacy/releases/download/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
 
-# Téléchargement du modèle scispaCy requis par ner.py pendant la construction de l'image
-RUN python -m spacy download en_core_sci_sm
-
-# Copie du code source de l'application
+# Copy the application source code
 COPY ./biomedcat /app/biomedcat
 
-# Création des dossiers de données pour le montage des volumes
+# Creation of data folders for volume mounting
 RUN mkdir -p /app/data/Dataset /app/data/Output
 
-# Commande par défaut (sera surchargée par docker-compose)
+# Default command (will be overridden by docker-compose)
 CMD ["python", "-m", "biomedcat.pipeline"]
