@@ -1,11 +1,11 @@
-# Utilisation d'une image Python légère
+# Use a lightweight Python image
 FROM python:3.12-slim
 
-# Éviter la création de fichiers .pyc et permettre l'affichage immédiat des logs
-ENV PYTHONDONTWRITEBYTECODE=1
+# Prevent Python from writing .pyc files and enable unbuffered logging
+ENV PYTHOTONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Installation des dépendances système nécessaires au traitement de documents
+# Install system dependencies required for document processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice \
     poppler-utils \
@@ -18,28 +18,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Installation de 'uv' pour une gestion ultra-rapide des dépendances Python
+# Install 'uv' for ultra-fast Python dependency management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 WORKDIR /app
 
-# Installation des dépendances Python
+# Install Python dependencies
 # Added langchain-core, spacy and scispacy for NER and Normalization stages
-# The scispaCy model is installed directly via URL to avoid 'spacy download' registry errors
+# The scispaCy model is installed via its official package name
 RUN uv pip install --system \
     httpx \
     pydantic-settings \
     pydantic \
     torch \
     torchvision \
-    torchaudio \
+    torcha_audio \
     transformers \
     pillow \
     pdf2image \
     langchain-core \
     spacy \
     scispacy \
-    https://github.com/allenai/scispacy/releases/download/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
+    en_core_sci_sm
 
 # Copy the application source code
 COPY ./biomedcat /app/biomedcat
