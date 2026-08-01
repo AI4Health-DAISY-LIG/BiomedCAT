@@ -1,7 +1,7 @@
 # Use a lightweight Python image
 FROM python:3.12-slim
 
-# Prevent Python from writing .pyc files and enable unblbuffered logging
+# Prevent Python from writing .pyc files and enable unbuffered logging
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
@@ -24,10 +24,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 WORKDIR /app
 
 # Install Python dependencies
-# Added langchain-core, spacy and scispacy for NER and Normal_stages
-# The scispaCy model is installed via its official package name
+# Added langchain-core, spacy and scispacy for NER and Normalization stages
+# The scispaCy model is installed via the official S3 release URL to ensure stability
 RUN uv pip install --system \
     httpx \
+    pyd  \
     pydantic-settings \
     pydantic \
     torch \
@@ -39,7 +40,7 @@ RUN uv pip install --system \
     langchain-core \
     spacy \
     scispacy \
-    en_core_sci_sm
+    https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
 
 # Copy the application source code
 COPY ./biomedcat /app/biomedcat
