@@ -7,7 +7,7 @@ services:
     restart: always
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=llama3.1
+      - OLLAMA_MODEL=gemma4:12b-it-qat
     volumes:
       # Montage des dossiers de l'utilisateur pour la persistance
       - ./Dataset:/app/data/Dataset

@@ -32,3 +32,36 @@ Once started:
 ## 📂 Folder Structure
 - `data/`: Place your source files here.
 - `output/`: JSON results and logs are generated here.
+
+## For developpers
+### mode simple batch                                                                                                                  
+Si vous avez déjà des fichiers dans votre dossier data/ (ou Dataset/ selon votre montage Docker), lancez simplement la commande suivante depuis la racine de votre projet :
+   ```python         
+   python -m biomedcat.pipeline
+   ``` 
+
+Le script va scanner le dossier, traiter chaque fichier supporté, et vous afficher les résultats dans la console.                      
+
+### mode batch with a specific file path: 
+    ```python                                                                                                                                      python -m biomedcat.pipeline chemin/vers/votre/document pptx
+    ```                                                                                                
+
+### Outputs:
+ • La création du fichier JSON : Allez vérifier dans votre dossier Output/. Un fichier .json est généré 
+ • Data quality : Ouvrez le fichier .json généré.                                                                              
+    • entités extraites (entities) correspondent bien au texte du document                                                                 
+    • CURIE field corresponding to the normalized ID in any knowledge graph aligned to the biolink model                                                             
+
+Un point de vigilance important (Docker)                                                                                                                     
+
+Comme votre code utilise host.docker.internal pour contacter Ollama, si vous lancez le test directement sur votre machine hôte (hors Docker), assurez_vous   
+que l'URL d'Ollama est accessible localement.                                                                                                                
+
+Si vous voulez tester dans les conditions réelles de production, utilisez Docker :                                                                           
+
+                                                                                                                                                             
+docker compose run pipeline python -m biomedcat.pipeline                                                                                                     
+                                                                                                                                                             
+
+Une fois que vous aurez confirmé que le pipeline produit des résultats JSON corrects et complets, nous pourrons passer à l'étape de création de l'API en     
+toute confiance.                                                                                                                                         

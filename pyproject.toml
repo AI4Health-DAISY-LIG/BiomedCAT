@@ -10,6 +10,11 @@ dependencies = [
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
     # Add other dependencies used by your stages here (e.g., python-pptx, pdf2image)
+    "torch>=2.13.0",
+    "torchvision>=0.28.0",
+    "transformers>=5.9.0",
+    "pillow>=12.1.1",
+    "pdf2image>=1.17.0",
 ]
 
 [tool.uv]

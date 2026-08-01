@@ -24,13 +24,13 @@ if ! command -v ollama &> /dev/null; then
 fi
 
 # 3. Préparation du modèle (Téléchargement automatique si nécessaire)
-echo "🔍 Vérification de la présence du modèle llama3.1..."
-if ! ollama list | grep -q "llama3.1"; then
+echo "🔍 Vérification de la présence du modèle gemma4:12b-it-qat..."
+if ! ollama list | grep -q "gemma4:12b-it-qat"; then
     echo "📥 Modèle non trouvé. Téléchargement en cours (cela peut prendre quelques minutes)..."
-    ollama pull llama3.1
+    ollama pull gemma4:12b-it-qat
     echo "✅ Modèle téléchargé avec succès."
 else
-    echo "✅ Modèle llama3.1 est prêt."
+    echo "✅ Modèle gemma4:12b-it-qat est prêt."
 fi
 
 # 4. Lancement de l'application via Docker Compose
