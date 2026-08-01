@@ -8,6 +8,7 @@ services:
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=gemma4:12b-it-qat
+      - GLM_MODEL_ID=THUDM/glm-4v-9b
     volumes:
       # Montage des dossiers de l'utilisateur pour la persistance
       - ./Dataset:/app/data/Dataset
@@ -17,7 +18,13 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - biomedcat_network
-
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   frontend:
     image: node:20-slim
