@@ -23,7 +23,7 @@ WORKDIR /app
 
 # Copie des fichiers de dépendances (si présents) ou installation directe
 # Ici, nous installons les dépendances nécessaires au pipeline uniquement
-RUN uv pip install --system httpx pydantic-settings pydantic
+RUN uv pip install --system httpx pydantic-settings pydantic torch torchvision torchaudio transformers pillow pdf2image
 
 # Copie du code source de l'application
 COPY ./biomedcat /app/biomedcat
