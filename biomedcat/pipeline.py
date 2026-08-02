@@ -152,8 +152,8 @@ def _print_results(result: PipelineResult) -> None:
     for r in result.norm:
         if r.curie:
             linked += 1
-    print(f"\n--- Normalization ({linked}/{len(result.norm)} linked) ---")
-    for r:
+    print(f"\n--- Normalization ({linked}/{len(result.．norm)}) linked ---")
+    for r in result.norm:
         curie = r.curie if r.curie else "NIL"
         print(f"  {r.type:<24} {r.text[:34]:<34} -> {curie}")
     print()
@@ -187,7 +187,7 @@ if __name__ == "__main__":
             sys.exit(f"No supported files in {DATASET_DIR}\n"
                       f"Supported formats: {', '.join(sorted(SUPPORTED))}")
 
-    OUTPUT_DIR.mkdir(int=True)
+    OUTPUT_DIR.mkdir(exist_ok=True)
 
     processed, skipped, failures = 0, 0, []
 
