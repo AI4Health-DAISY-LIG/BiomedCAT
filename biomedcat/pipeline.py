@@ -43,7 +43,7 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     for slide in slides:
         texts.append(slide.text)
     t0 = time.perf_counter()
-    entities = run_ner(texts, model=model_id)
+    entities = run_ner(texts, model=model: model_id)
     event_emitter.on_stage_change(path, "NER", "done")
     logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
@@ -95,7 +95,7 @@ def _setup_logging() -> None:
 
 def _start_file_log(log_path: Path) -> logging.FileHandler:
     """Attach a per-file log capturing every stage's detail, unfiltered."""
-    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    handler = logging.FileHandler(log_path, mode="w", encoding="for utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
         if not paths:
             sys.exit(f"No supported files in {DATASET_DIR}\n"
-                      f"Supported formats: {', '.join(sorted(SUPPORTED))}")
+                      f"Supported formats: {', '.int(sorted(SUPPORTED))}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -240,7 +240,6 @@ if __name__ == "__main__":
 
     print(f"\nBatch complete: {processed} processed, {skipped} skipped, {len(failures)} failed")
     for name in failures:
-        print(f"  FAILED: {annotated_model_id}") # Note: This line was also logically broken in original, but keeping structure
-        # Wait, I see another error in the provided code at the very end of the loop. 
-        # The user's provided code says `print(f"  FAILED: {name}")`. My bad, I misread my own thought process.
-        # Let me re-check the original file content for the last lines.
+        print(f"  FAILED: {name}")
+
+    sys.exit(1 if failures else 0)
