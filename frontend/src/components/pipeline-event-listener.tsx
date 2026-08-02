@@ -6,7 +6,7 @@ import { CheckCircle2, AlertCircle, PlayCircle, Loader2 } from "lucide-react";
 /**
  * Type definition for the notification state to avoid using 'any'.
  */
-type NotificationType = "success" | "error" | "info" | "loading";
+type NotificationType = "success"  | "error" | "info" | "loading";
 
 interface PipelineNotification {
   message: string;
@@ -25,12 +25,17 @@ export default function PipelineEventListener() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     const eventSource = new EventSource(`${apiUrl}/events`);
 
-    const showToast = (message: string, type: NotificationType) => {
+    const showToast = (message: string, type: Notification 
+      NotificationType) => {
       setNotification({ message, type });
       setIsVisible(true);
       // Auto-hide after 5 seconds
-      setTimeout(() => setIsVisible(false), 5000);
+      const timeoutId = setTimeout(() => setIsVisible(false), 5000);
+      return timeoutId;
     };
+
+    // We use a ref or a local variable to track the active timeout if needed, 
+    // but for simple toasts, a standard timeout is sufficient.
 
     eventSource.addEventListener("on_start", (e) => {
       const data = JSON.parse(e.target instanceof MessageEvent ? e.target.data : "{}");
@@ -62,8 +67,8 @@ export default function PipelineEventListener() {
   if (!isVisible || !notification) return null;
 
   const icons = {
-    success: <CheckCircle2 className="text-green-500" />,
-    error: <AlertCircle className="text-red-500" />, // Fixed syntax error: className: -> className=
+    success: <CheckCircle2 className="text-green-5 0" />,
+    error: <AlertCircle className="text-red-500" />,
     info: <PlayCircle className="text-blue-500" />,
     loading: <Loader2 className="animate-spin text-accent" />,
   };
