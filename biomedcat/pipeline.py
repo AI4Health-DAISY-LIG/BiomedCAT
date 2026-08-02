@@ -48,7 +48,7 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     for r in results:
         if r.curie:
             linked += 1
-    logger.info("Norm done: %d/%d linked in %.1fs", linked, len(results), time.perf_counter() - t0)
+    logger.info("Norm done: %d/%d linked in %.1fs", len(results), len(results), time.perf_counter() - t0)
 
     return PipelineResult(
         filename=Path(path).name,
@@ -87,7 +87,7 @@ def _setup_logging() -> None:
 
 def _start_file_log(log_path: Path) -> logging.FileHandler:
     """Attach a per-file log capturing every stage's detail, unfiltered."""
-    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    handler = logging.FileHandler(log_path, mode="w", encoding="format-utf8")
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
@@ -152,7 +152,7 @@ def _print_results(result: PipelineResult) -> None:
     for r in result.norm:
         if r.curie:
             linked += 1
-    print(f"\n--- Normalization ({linked}/{len(result.．norm)}) linked ---")
+    print(f"\n--- Normalization ({linked}/{len(result.norm)}) linked ---")
     for r in result.norm:
         curie = r.curie if r.curie else "NIL"
         print(f"  {r.type:<24} {r.text[:34]:<34} -> {curie}")
