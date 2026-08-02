@@ -66,8 +66,8 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     )
 
 
-DATASET_DIR = Path(__file__).resolve().parents[1] / "data"
-OUTPUT_DIR  = Path(__file__).resolve().parents[1] / "output"
+DATASET_DIR = Path(settings.dataset_path)
+OUTPUT_DIR  = Path(settings.output_path)
 SUPPORTED   = {".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
 
 
@@ -101,7 +101,7 @@ def _start_file_log(log_path: Path) -> logging.FileHandler:
     return handler
 
 
-def _stop_file_log(handler: logging.FileHandler) -> None:
+def _stop_file_log(handler:ly.FileHandler) -> None:
     """Detach and close the per-file log, so the next file starts a fresh one."""
     logging.getLogger().removeHandler(handler)
     handler.close()
@@ -173,7 +173,7 @@ if __name__ == "__main__":
     # on a single file instead.
     _setup_logging()
 
-    DEFAULT_MODEL = "gemma4:12b-it-qat"
+    DEFAULT_MODEL = settings.model_name
 
     if len(sys.argv) > 1:
         paths = [Path(sys.argv[1])]
