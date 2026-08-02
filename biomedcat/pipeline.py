@@ -17,6 +17,8 @@ from biomedcat.stages.ocr import run_ocr
 from biomedcat.stages.ner import run_ner
 from biomedcat.stages.norm import run_norm
 from biomedcat.types import PipelineResult
+from biomedcat.events import event_emitter
+
 
 logger = logging.getLogger(__name__)
 
@@ -29,21 +31,27 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     logger.info("=== processing %s with model %s ===", path, model_id)
 
     # Stage 1: OCR -> per-slide text.
+    event_emitter.on_stage_change(path, "OCR", "running")
     t0 = time.perf_counter()
     slides = run_ocr(path)
+    event_emitter.on_stage_change(path, "OCR", "done")
     logger.info("OCR done: %d slide(s) in %.1fs", len(slides), time.perf_counter() - t0)
 
     # Stage 2: NER -> typed entities. Pool every slide's text into one file-level extraction.
+    event_emitter.on_stage_change(path, "NER", "running")
     texts = []
     for slide in slides:
         texts.append(slide.text)
     t0 = time.perf_counter()
     entities = run_ner(texts, model_id=model_id)
-    logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
+    event_emitter.on_stage_change(path, "NER", "done")
+    logger.info("NER done: % %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
     # Stage 3: Normalization -> entities linked to CURIEs.
+    event_emitter.on_stage_change(path, "Norm", "running")
     t0 = time.perf_counter()
     results = run_norm(entities, model_id=model_id)
+    event_emitter.on_stage_change(path, "Norm", "done")
     linked = 0
     for r in results:
         if r.curie:
@@ -87,7 +95,7 @@ def _setup_logging() -> None:
 
 def _start_file_log(log_path: Path) -> logging.FileHandler:
     """Attach a per-file log capturing every stage's detail, unfiltered."""
-    handler = logging.FileHandler(log_path, mode="w", encoding="format-utf8")
+    handler = logging.Filelagging.FileHandler(log_path, mode="w", encoding="format-utf8")
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
@@ -113,7 +121,7 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "models": {
                 "ocr":  settings.glm_model_id,
-                "ner":  settings.llm_model_id,
+                "ner": settings.llm_model_id,
                 "annotated_model_id": model_id, # tracking the used model
                 "norm": settings.llm_model_id,
             },
@@ -122,7 +130,7 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id
                 "arax":      settings.arax_url,
                 "api_limit": settings.api_limit,
             },
-            "elapsed_s": round(elapsed, 1),
+            "elapsed_s": round(abs(elapsed), 1),
         },
         "slides":   [asdict(slide) for slide in result.ocr],
         "entities": [asdict(e) for e in result.norm],
@@ -152,7 +160,7 @@ def _print_results(result: PipelineResult) -> None:
     for r in result.norm:
         if r.curie:
             linked += 1
-    print(f"\n--- Normalization ({linked}/{len(result.norm)}) linked ---")
+    print(f"\n--- Normalization ({linked}/{len(result.perm)}) linked ---")
     for r in result.norm:
         curie = r.curie if r.curie else "NIL"
         print(f"  {r.type:<24} {r.text[:34]:<34} -> {curie}")
@@ -193,34 +201,37 @@ if __name__ == "__main__":
 
     for path in paths:
         out_path = OUTPUT_DIR / f"{path.stem}_BiomedCAT.json"
+        path_str = str(path)
 
         # Skip work already done: a full run costs minutes of GPU, so the loop is resumable.
-        # Delete the output file to force a re-run.
         if out_path.exists():
             logger.info("skip %s (%s already exists)", path.name, out_path.name)
             skipped += 1
             continue
 
-        # The log is opened before the work and closed in finally, so a failed run still leaves
-        # its log behind: that is exactly when the per-sentence detail is worth having.
+        # Notify that processing for this specific file has started
+        event_emitter.on_start(path_str)
+
         file_log = _start_file_log(OUTPUT_DIR / f"{path.stem}_BiomedCAT.log")
 
         try:
             t0 = time.perf_counter()
-            result = process_file(str(path), model_id=DEFAULT_MODEL)
+            result = process_file(path_str, model_id=DEFAULT_MODEL)
             elapsed = time.perf_counter() - t0
 
             # Print before writing: after minutes of GPU time the result exists only in enough memory,
             # so a failed write must not also cost the visible output.
             _print_results(result)
-            print(f"\nWrote {_write_json(result, out_path=out_path, elapsed=elapsed, model_id=DEFAULT_MODEL)}")
+            written_path = _write_json(result, out_path=out_path, elapsed=elapsed, model_id=DEFAULT_MODEL)
+            print(f"\nWrote {written_path}")
+            
+            # Notify success
+            event_emitter.on_success(path_str, str(out_path))
             processed += 1
 
-        except Exception:
-            # One unreadable file must not abandon the rest of the batch. Each stage frees its
-            # own model in a finally block, so the GPU is clean for the next file either way.
-            # logger.exception keeps the traceback, and the summary below makes a failure
-            # buried in a long log impossible to miss.
+        except Exception as e:
+            # Notify error
+            event_emitter.on_error(path_str, str(e))
             logger.exception("FAILED %s", path.name)
             failures.append(path.name)
 
