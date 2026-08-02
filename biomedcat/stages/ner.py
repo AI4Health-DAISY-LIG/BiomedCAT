@@ -37,15 +37,16 @@ class NERPipeline:
     error_filter) does not have to pass them around by hand.
     """
 
-    def __init__(self):
+    def __init__(self, model_id: str | None = None):
         self.tokenizer = None      # heavy LLM, loaded lazily in load()
         self.model = None
         self.nlp = _get_nlp()      # scispaCy (CPU): sentence splitting only
+        self.model_id = model_id
 
     def load(self):
-        """Load the shared 4-bit Llama into VRAM."""
-        self.tokenizer, self.model = build_llm()
-        logger.info("NER model loaded")
+        """Load the specified LLM into VRAM."""
+        self.tokenizer, self.model = build_llm(model_id=self.model_id)
+        logger.info("NER model loaded (ID: %s)", self.model_id or "default")
 
     def unload(self):
         """Drop the model and tokenizer and return their VRAM to the driver."""
@@ -67,7 +68,7 @@ class NERPipeline:
         text = re.sub(r"-\n(\w)", r"\1", text)
 
         # Flatten layout to prose for the splitter. This merges slide bullets into one run, since
-        # en_core_sci_sm assumes prose; a slide-aware context unit is future work.
+# en_core_sci_sm assumes prose; a slide-aware context unit is future work.
         text = re.sub(r"\n+", " ", text)
         text = re.sub(r" {2,}", " ", text)
         text = text.strip()
@@ -161,7 +162,7 @@ class NERPipeline:
     def run_zerotune(self, sentence: str) -> list[Entity]:
         """Extract typed entities from one sentence through the three ZeroTuneBio modules.
 
-        M1 maximises recall, grounding drops hallucinations, M2 recovers precision by typing,
+        M1 maximises recall, grounding drops hallucinations, M1 recovers precision by typing,
         and M3 removes only typings flagged wrong.
         """
         preview = sentence[:80] + ("..." if len(sentence) > 80 else "")
@@ -204,7 +205,7 @@ class NERPipeline:
         if not typed:
             return []
 
-        # Module 3: drop only the typings the model flags as wrong (default keep).
+        # Module 3: drop only the typings the model flags wrong (default keep).
         confirmed = self._error_filter(typed, sentence)
         logger.info("  M3 kept %d/%d", len(confirmed), len(typed))
         return confirmed
@@ -238,14 +239,14 @@ class NERPipeline:
         return unique
 
 
-def run_ner(texts: list[str]) -> list[Entity]:
+def run_ner(texts: list[str], model_id: str | None = None) -> list[Entity]:
     """Extract typed entities from a list of slide texts, loading and freeing the LLM once.
 
     CPU preprocessing (sentence splitting) runs before the model touches the GPU; the model
     is freed in a finally block (scale-to-zero) so a mid-run error cannot leak VRAM and the
     normalization stage inherits a clean GPU.
     """
-    pipe = NERPipeline()
+    pipe = NERPipeline(model_id=model_id)
 
     sentences = []
     for text in texts:

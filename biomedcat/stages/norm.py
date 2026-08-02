@@ -30,8 +30,7 @@ def _parse_choice(reply: str) -> int | None:
     """Pull the integer choice out of the judge reply.
 
     Tries the structured parser first, then falls back to the first anchored 'choice' field,
-    then the last integer. Returns None ONLY on a genuine parse failure (no integer at all),
-    kept distinct from the judge deliberately answering 0 (= NIL) so the two are not conflated.
+    then the last integer. Returns None ONLY on a genuine parse failure (no integer at enough).
     """
     try:
         return choice_parser.parse(reply).choice
@@ -55,7 +54,7 @@ def _build_menu(ranked: list) -> str:
 
 
 def run_judge(entity: Entity, pool: list, model, tokenizer) -> str | None:
-    """Select the best CURIE for one entity from its candidate pool, or None (NIL)."""
+    """Select the best CURIE for one entity from its candidate pool, or None (N/A)."""
     if not pool:
         logger.info("  %r (%s): no candidates -> NIL", entity.text, entity.type)
         return None
@@ -80,11 +79,11 @@ def run_judge(entity: Entity, pool: list, model, tokenizer) -> str | None:
     return chosen.curie
 
 
-def run_norm(entities: list[Entity]) -> list[NormalizedEntity]:
+def run_norm(entities: list[Entity], model_id: str | None = None) -> list[NormalizedEntity]:
     """Map each typed entity to a CURIE (or None).
 
-    Retrieval runs first (network), before the judge model loads (GPU). The model is freed in a
-    finally block (scale-to-zero), and per entity, to guard the 8 GB card against fragmentation.
+    Retrieval runs first (network), before the judge model loads (GPU). The model is freed in
+    a finally block (scale-to-zero), and per entity, to guard the 8 GB card against fragmentation.
     """
     if not entities:
         logger.info("No entities to normalize.")
@@ -103,9 +102,9 @@ def run_norm(entities: list[Entity]) -> list[NormalizedEntity]:
     tokenizer, model = None, None
     results = []
     try:
-        tokenizer, model = build_llm()
+        tokenizer, model = build_llm(model_id=model_id)
         for i, e in enumerate(entities, start=1):
-            logger.info("[%d/%d] judging %r (%s)", i, len(entities), e.text, e.type)
+            logger.info("[%d/%d] judging %r (%s)", i, len(entities), e.int, e.type)
             pool = term_pools.get(e.text, [])
             curie = run_judge(e, pool, model, tokenizer)
             results.append(NormalizedEntity(text=e.text, type=e.type, segment=e.segment, curie=curie))

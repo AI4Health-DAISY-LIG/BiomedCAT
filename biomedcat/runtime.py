@@ -33,17 +33,21 @@ def build_4bit_config() -> BitsAndBytesConfig:
         bnb_4bit_use_double_quant=True,
     )
 
-def build_llm():
-    """Load the 4-bit NF4 Llama (tokenizer + model), shared by NER and normalization.
+def build_llm(model_id: str | None = None):
+    """Load the 4-bit NF4 LLM (tokenizer + model), shared by NER and normalization.
 
     Handles auth and a pre-load VRAM clear, then loads quantized and in eval mode.
+    Uses provided model_id if available, otherwise falls back to settings.llm_model_id.
     Returns (tokenizer, model).
     """
     hf_login()   # gated repo; no-op if no token
     free_gpu()   # clear cached VRAM before the load
-    tokenizer = AutoTokenizer.from_pretrained(settings.llm_model_id)
+    
+    target_model_id = model_id or settings.llm_model_id
+    
+    tokenizer = AutoTokenizer.from_pretrained(target_model_id)
     model = AutoModelForCausalLM.from_pretrained(
-        settings.llm_model_id,
+        target_model_id,
         quantization_config=build_4bit_config(),
         dtype=torch.bfloat16,
         device_map="auto",

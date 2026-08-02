@@ -21,9 +21,12 @@ from biomedcat.types import PipelineResult
 logger = logging.getLogger(__name__)
 
 
-def process_file(path: str) -> PipelineResult:
-    """Run the full OCR -> NER -> Normalization pipeline on a single file."""
-    logger.info("=== processing %s ===", path)
+def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResult:
+    """Run the full OCR -> NER -> Normalization pipeline on a single file.
+
+    Uses the provided model_id for both NER and Normalization stages.
+    """
+    logger.info("=== processing %s with model %s ===", path, model_id)
 
     # Stage 1: OCR -> per-slide text.
     t0 = time.perf_counter()
@@ -35,12 +38,12 @@ def process_file(path: str) -> PipelineResult:
     for slide in slides:
         texts.append(slide.text)
     t0 = time.perf_counter()
-    entities = run_ner(texts)
-    logger.info("NER done: %d entit(y/ies) in %.1fs", len(entities), time.perf_counter() - t0)
+    entities = run_ner(texts, model_id=model_id)
+    logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
     # Stage 3: Normalization -> entities linked to CURIEs.
     t0 = time.perf_counter()
-    results = run_norm(entities)
+    results = run_norm(entities, model_id=model_id)
     linked = 0
     for r in results:
         if r.curie:
@@ -96,15 +99,12 @@ def _stop_file_log(handler: logging.FileHandler) -> None:
     handler.close()
 
 
-def _write_json(result: PipelineResult, out_path: Path, elapsed: float) -> Path:
+def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id: str) -> Path:
     """Serialize one run to JSON.
 
     Only `norm` is written as "entities": run_norm returns one record per input entity with
     text/type/segment copied verbatim, so writing `ner` as well would duplicate every field
     but the curie, leaving two representations of one fact that can drift apart.
-
-    The run block records what produced these answers. The two resolvers are live public
-    services, so a later run that differs must be distinguishable from a code regression.
     """
     payload = {
         "schema_version": "1.0",
@@ -114,6 +114,7 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float) -> Path:
             "models": {
                 "ocr":  settings.glm_model_id,
                 "ner":  settings.llm_model_id,
+                "annotated_model_id": model_id, # tracking the used model
                 "norm": settings.llm_model_id,
             },
             "resolvers": {
@@ -160,9 +161,11 @@ def _print_results(result: PipelineResult) -> None:
 
 if __name__ == "__main__":
     # Batch runner: process every supported file in data/ that has no output yet, printing
-    # the results and writing each to output/<stem>_BiomedCAT.json. Pass a file path to run on
-    # a single file instead.
+    # the results and writing each to output/<stem>_BiomedCAT.json. Pass a file path to run
+    # on a single file instead.
     _setup_logging()
+
+    DEFAULT_MODEL = "gemma4:12b-it-qat"
 
     if len(sys.argv) > 1:
         paths = [Path(sys.argv[1])]
@@ -182,7 +185,7 @@ if __name__ == "__main__":
 
         if not paths:
             sys.exit(f"No supported files in {DATASET_DIR}\n"
-                     f"Supported formats: {', '.join(sorted(SUPPORTED))}")
+                      f"Supported formats: {', '.join(sorted(SUPPORTED))}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -204,13 +207,13 @@ if __name__ == "__main__":
 
         try:
             t0 = time.perf_counter()
-            result = process_file(str(path))
+            result = process_file(str(path), model_id=DEFAULT_MODEL)
             elapsed = time.perf_counter() - t0
 
             # Print before writing: after minutes of GPU time the result exists only in enough memory,
             # so a failed write must not also cost the visible output.
             _print_results(result)
-            print(f"\nWrote {_write_json(result, out_path, elapsed)}")
+            print(f"\nWrote {_write_json(result, outint=out_path, elapsed=elapsed, model_id=DEFAULT_MODEL)}")
             processed += 1
 
         except Exception:
