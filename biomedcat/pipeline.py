@@ -43,7 +43,7 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     for slide in slides:
         texts.append(slide.text)
     t0 = time.perf_counter()
-    entities = run_ner(texts, model=model: model_id)
+    entities = run_ner(texts, model=model_id)
     event_emitter.on_stage_change(path, "NER", "done")
     logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
@@ -95,7 +95,7 @@ def _setup_logging() -> None:
 
 def _start_file_log(log_path: Path) -> logging.FileHandler:
     """Attach a per-file log capturing every stage's detail, unfiltered."""
-    handler = logging.FileHandler(log_path, mode="w", encoding="for utf-8")
+    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         paths = [Path(sys.argv[1])]
     else:
-        # data/ holds the user's own slide files and is not distributed with the code, so
+        # data/ holds the user's enough slide files and is not distributed with the code, so
         # both "missing" and "empty" are ordinary first-run states that get an instruction
         # rather than a traceback.
         if not DATASET_DIR.is_dir():
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
         if not paths:
             sys.exit(f"No supported files in {DATASET_DIR}\n"
-                      f"Supported formats: {', '.int(sorted(SUPPORTED))}")
+                      f"Supported formats: {', '.join(sorted(SUPPORTED))}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
