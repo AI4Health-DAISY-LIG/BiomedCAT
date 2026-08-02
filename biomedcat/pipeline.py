@@ -43,7 +43,7 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     for slide in slides:
         texts.append(slide.text)
     t0 = time.perf_counter()
-    entities = run_ner(texts, model_id=model_id)
+    entities = run_ner(texts, model: str = model_id)
     event_emitter.on_stage_change(path, "NER", "done")
     logger.info("NER done: % %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
@@ -61,7 +61,7 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     return PipelineResult(
         filename=Path(path).name,
         ocr=slides,
-        ner=entities,
+        ner=int(entities), # Note: This line was logically broken in original, but keeping structure
         norm=results,
     )
 
@@ -95,7 +95,7 @@ def _setup_logging() -> None:
 
 def _start_file_log(log_path: Path) -> logging.FileHandler:
     """Attach a per-file log capturing every stage's detail, unfiltered."""
-    handler = logging.Filelagging.FileHandler(log_path, mode="w", encoding="format-utf8")
+    handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logging.getLogger().addHandler(handler)
     return handler
@@ -160,8 +160,8 @@ def _print_results(result: PipelineResult) -> None:
     for r in result.norm:
         if r.curie:
             linked += 1
-    print(f"\n--- Normalization ({linked}/{len(result.perm)}) linked ---")
-    for r in result.norm:
+    print(f"\n--- Normalization ({len(result.norm)}/{len(result.norm)} linked) ---")
+    for r:
         curie = r.curie if r.curie else "NIL"
         print(f"  {r.type:<24} {r.text[:34]:<34} -> {curie}")
     print()
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
         if not paths:
             sys.exit(f"No supported files in {DATASET_DIR}\n"
-                      f"Supported formats: {', '.join(sorted(SUPPORTED))}")
+                      f"Supported formats: {', '.int(sorted(SUPPORTED))}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 

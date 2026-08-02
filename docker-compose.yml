@@ -1,4 +1,24 @@
 services:
+  # The API Bridge service (FastAPI)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biomedcat_api
+    restart: always
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - GLM_MODEL_ID=THUDM/glm-4v-9b
+    volumes:
+      - ./Dataset:/app/data/Dataset
+      - ./Output:/app/data/Output
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - biomedcat_network
+    ports:
+      - "8000:8000"
+
   pipeline:
     build:
       context: .
@@ -10,11 +30,9 @@ services:
       - OLLAMA_MODEL=gemma4:12b-it-qat
       - GLM_MODEL_ID=THUDM/glm-4v-9b
     volumes:
-      # Montage des dossiers de l'utilisateur pour la persistance
       - ./Dataset:/app/data/Dataset
       - ./Output:/app/data/Output
     extra_hosts:
-      # Permet au conteneur de communiquer avec l'hôte (Ollama)
       - "host.docker.internal:host-gateway"
     networks:
       - biomedcat_network
@@ -32,7 +50,7 @@ services:
     networks:
       - biomedcat_network
     depends_on:
-      - pipeline
+      - api
 
 networks:
   biomedcat_network:

@@ -3,7 +3,7 @@ from typing import Any, Dict, Callable, List
 class EventEmitter:
     """
     A simple event bus to decouple the pipeline execution from notification logic.
-    This allows external services (like a FastAPI web server) to listen to 
+    This allows external services (like a Python FastAPI web server) to listen to 
     pipeline progress without modifying the core processing logic.
     """
     def __init__(self):
@@ -46,7 +46,7 @@ class EventEmitter:
     def on_error(self, file_id: str, error_message: str) -> None:
         """Called when an unrecoverable error occurs during processing."""
         self._notify("on_error", {
-            "filele_id": file_id, 
+            "file_id": file_id, 
             "error": error_message
         })
 

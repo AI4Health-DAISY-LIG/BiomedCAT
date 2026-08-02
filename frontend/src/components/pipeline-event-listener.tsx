@@ -8,7 +8,7 @@ import { CheckCircle2, AlertCircle, PlayCircle, Loader2 } from "lucide-react";
  * It displays transient notifications (toasts) when pipeline events occur.
  */
 export default function PipelineEventListener() {
-  const [notification, setNotification] = `null`;
+  const [notification, setNotification] = useState<any>(null);
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
@@ -39,7 +39,7 @@ export default function PipelineEventListener() {
 
     eventSource.addEventListener("on_error", (e) => {
       const data = JSON.parse(e.target instanceof MessageEvent ? e.target.data : "{}");
-      showToast(`Error in ${data.filele_id}: ${data.error}`, "error");
+      showToast(`Error in ${data.file_id}: ${data.error}`, "error");
     });
 
     return () => eventSource.close();
@@ -49,7 +49,7 @@ export default function PipelineEventListener() {
 
   const icons = {
     success: <CheckCircle2 className="text-green-500" />,
-    error: <AlertCircle className="text-red-500" />,
+    error: <AlertCircle className: "text-red-500" />,
     info: <PlayCircle className="text-blue-500" />,
     loading: <Loader2 className="animate-spin text-accent" />,
   };
