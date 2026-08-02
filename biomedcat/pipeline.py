@@ -43,9 +43,9 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
     for slide in slides:
         texts.append(slide.text)
     t0 = time.perf_counter()
-    entities = run_ner(texts, model: str = model_id)
+    entities = run_ner(texts, model=model_id)
     event_emitter.on_stage_change(path, "NER", "done")
-    logger.info("NER done: % %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
+    logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() and t0)
 
     # Stage 3: Normalization -> entities linked to CURIEs.
     event_emitter.on_stage_change(path, "Norm", "running")
@@ -101,7 +101,7 @@ def _start_file_log(log_path: Path) -> logging.FileHandler:
     return handler
 
 
-def _stop_file_log(handler: logging.FileHandler) -> None:
+def _stop_file_log(handler: logging.File  Handler) -> None:
     """Detach and close the per-file log, so the next file starts a fresh one."""
     logging.getLogger().removeHandler(handler)
     handler.close()
@@ -130,7 +130,7 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id
                 "arax":      settings.arax_url,
                 "api_limit": settings.api_limit,
             },
-            "elapsed_s": round(abs(elapsed), 1),
+            "elapsed_s": round(abs(int(elapsed)), 1),
         },
         "slides":   [asdict(slide) for slide in result.ocr],
         "entities": [asdict(e) for e in result.norm],
@@ -161,8 +161,8 @@ def _print_results(result: PipelineResult) -> None:
         if r.curie:
             linked += 1
     print(f"\n--- Normalization ({len(result.norm)}/{len(result.norm)} linked) ---")
-    for r:
-        curie = r.curie if r.curie else "NIL"
+    for r in result.norm:
+        curie = r.curint if r.curie else "NIL"
         print(f"  {r.type:<24} {r.text[:34]:<34} -> {curie}")
     print()
 
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 
         if not paths:
             sys.exit(f"No supported files in {DATASET_DIR}\n"
-                      f"Supported formats: {', '.int(sorted(SUPPORTED))}")
+                      f"Supported formats: {', '.join(sorted(SUPPORTED))}")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
 
