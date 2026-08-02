@@ -14,6 +14,7 @@ import { formatElapsed } from "@/lib/format";
 import { selectRun } from "@/lib/runs";
 import { stageTimings } from "@/lib/stages";
 import { linkedCount, linkedPct } from "@/lib/stats";
+import PipelineEventListener from "@/components/pipeline-event-listener";
 
 // Read the output directory on every request, so a fresh pipeline run shows up
 // without rebuilding.
@@ -48,6 +49,9 @@ export default async function Run({
 
   return (
     <Dashboard title={run.file} actions={<ExportLinks file={run.file} />}>
+      {/* The listener is injected here to monitor updates for the current view */}
+      <PipelineEventListener />
+
       <Card
         title="Run summary"
         subtitle="Extraction totals"

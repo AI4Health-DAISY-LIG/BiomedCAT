@@ -15,7 +15,9 @@ export default function UploadCard({
   className?: string;
 }) {
   const router = useRouter();
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLInputElement>(
+    null
+  );
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -26,15 +28,28 @@ export default function UploadCard({
 
     const body = new FormData();
     body.append("file", file);
+    
+    // 1. Upload the file to the backend
     const res = await fetch("/api/upload", { method: "POST", body });
 
     if (!res.ok) {
-      const { error } = await res.json().catch(() => ({ error: "Upload failed." }));
+      const { error } = await res.json().catch(() => ({
+        error: "Upload failed.",
+      }));
       setError(error);
+      setBusy(false);
     } else {
+      // 2. Trigger the pipeline processing immediately after successful upload
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      try {
+        await fetch(`${apiUrl}/process/${file.name}`, { method: "POST" });
+      } catch (e) {
+        console.error("Failed to trigger pipeline:", e);
+      }
+
       router.refresh(); // pull the new deck into the queue below
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   return (
@@ -46,9 +61,9 @@ export default function UploadCard({
       <div className="flex h-full flex-col gap-4">
         <div
           onDragOver={(e) => {
-          e.preventDefault();
-          setDragging(true);
-        }}
+            e.preventDefault();
+            setDragging(true);
+          }}
           onDragLeave={() => setDragging(false)}
           onDrop={(e) => {
             e.preventDefault();
@@ -93,7 +108,7 @@ export default function UploadCard({
             {queued.map((deck) => (
               <li
                 key={deck.name}
-                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-inset px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-lg border border-line bg-inset px-3 py	py-2"
               >
                 <span className="truncate text-body">{deck.name}</span>
                 <span className="shrink-0 text-label text-muted">

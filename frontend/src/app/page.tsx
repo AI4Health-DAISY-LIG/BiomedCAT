@@ -8,6 +8,7 @@ import UploadCard from "@/components/upload-card";
 import { listQueued } from "@/lib/queue";
 import { listRuns } from "@/lib/runs";
 import { batchTotals, linkedCount, linkedPct } from "@/lib/stats";
+import PipelineEventListener from "@/components/pipeline-event-listener";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,9 @@ export default function Home() {
 
   return (
     <Dashboard title="Overview" subtitle="Processed decks and aggregate totals.">
+      {/* The listener is injected here to monitor global pipeline events */}
+      <PipelineEventListener />
+
       {/* First, because adding a deck is what a visitor came to do. */}
       <UploadCard queued={listQueued()} className="h-full" />
 
