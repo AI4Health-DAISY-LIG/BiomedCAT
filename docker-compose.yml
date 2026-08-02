@@ -14,6 +14,7 @@ services:
       - ./Output:/app/data/Output
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    command: uvicorn biomedcat.api:app --host 0.0.0.0 --port 8000
     networks:
       - biomedcat_network
     ports:
