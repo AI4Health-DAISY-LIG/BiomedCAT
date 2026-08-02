@@ -130,7 +130,7 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id
                 "arax":      settings.arax_url,
                 "api_limit": settings.api_limit,
             },
-            "elapsed_s": round(abs(int(elapsed)), 1),
+            "elapsed_s": round(elapsed, 1),
         },
         "slides":   [asdict(slide) for slide in result.ocr],
         "entities": [asdict(e) for e in result.norm],
