@@ -1,5 +1,4 @@
 services:
-  # The API Bridge service (FastAPI)
   api:
     build:
       context: .
@@ -7,14 +6,12 @@ services:
     container_name: biomedcat_api
     restart: always
     environment:
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_URL=http://ollama:11434
       - GLM_MODEL_ID=THUDM/glm-4v-9b
       - OLLAMA_MODEL=gemma4:12b-it-qat
     volumes:
       - ./Dataset:/app/data
       - ./Output:/app/output
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     command: uvicorn biomedcat.api:app --host 0.0.0.0 --port 8000
     networks:
       - biomedcat_network
@@ -28,14 +25,12 @@ services:
     container_name: biomedcat_pipeline
     restart: always
     environment:
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=gemma4:12b-it-qat
       - GLM_MODEL_ID=THUDM/glm-4v-9b
     volumes:
       - ./Dataset:/app/data
       - ./Output:/app/output
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - biomedcat_network
 
@@ -53,6 +48,7 @@ services:
       - biomedcat_network
     depends_on:
       - api
+      - ollama
 
 networks:
   biomedcat_network:
