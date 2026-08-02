@@ -18,13 +18,6 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - biomedcat_network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   frontend:
     image: node:20-slim
