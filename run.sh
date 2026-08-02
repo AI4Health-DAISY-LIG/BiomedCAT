@@ -10,7 +10,7 @@ echo "🚀 Bienvenue dans le lanceur BiomedCAT"
 echo "-------------------------------------------------------"
 
 # 1. Vérification de Docker
-if ! command -v docker &> /dev/app/dev/null; then
+if ! command -v docker &> /dev/null; then
     echo "❌ Erreur: Docker n'est pas installé sur votre machine."
     echo "Veuillez installer Docker Desktop : https://www.docker.com/products/docker-desktop"
     exit 1
