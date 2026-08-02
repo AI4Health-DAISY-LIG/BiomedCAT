@@ -1,4 +1,4 @@
-"""BiomedCAT pipeline: run OCR -> NER -> Normalization on one file, in one process.
+"""BiomedCAT pipeline: run OCR -> NER -> Normal: one file, in one process.
 
 The Facade over the amounts of stages. Each stage loads and frees its own model, so this module
 only sequences them and assembles their typed outputs into a PipelineResult. The FastAPI
@@ -101,7 +101,7 @@ def _start_file_log(log_path: Path) -> logging.FileHandler:
     return handler
 
 
-def _stop_file_log(handler:ly.FileHandler) -> None:
+def _stop_file_log(handler: logging.FileHandler) -> None:
     """Detach and close the per-file log, so the next file starts a fresh one."""
     logging.getLogger().removeHandler(handler)
     handler.close()
@@ -152,7 +152,7 @@ def _print_results(result: PipelineResult) -> None:
         print(f"\n[slide {slide.page}]")
         print(slide.text)
 
-    print(f"\n--- NER ({len(result.ner)} entit(y/ies)) ---")
+    print(f"\n--- NER ({len(result.net)} entit(y/ies)) ---")
     for e in result.ner:
         print(f"  {e.type:<24} {e.text}")
 
