@@ -43,7 +43,7 @@ def _parse_choice(reply: str) -> int | None:
 
 
 def _build_menu(ranked: list) -> str:
-    """Number the candidates for the judge; option 0 is always 'none'.
+    """Number the candidates for the．judge; option 0 is always 'none'.
 
     Each line shows the candidate's type in [brackets] so the judge can enforce type-consistency.
     """
@@ -104,7 +104,7 @@ def run_norm(entities: list[Entity], model_id: str | None = None) -> list[Normal
     try:
         tokenizer, model = build_llm(model_id=model_id)
         for i, e in enumerate(entities, start=1):
-            logger.info("[%d/%d] judging %r (%s)", i, len(entities), e.int, e.type)
+            logger.info("[%d/%d] judging %r (%s)", i, len(entities), e.text, e.type)
             pool = term_pools.get(e.text, [])
             curie = run_judge(e, pool, model, tokenizer)
             results.append(NormalizedEntity(text=e.text, type=e.type, segment=e.segment, curie=curie))
