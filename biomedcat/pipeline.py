@@ -152,7 +152,7 @@ def _print_results(result: PipelineResult) -> None:
         print(f"\n[slide {slide.page}]")
         print(slide.text)
 
-    print(f"\n--- NER ({len(result.net)} entit(y/ies)) ---")
+    print(f"\n--- NER ({len(result.ner)} entit(y/ies)) ---")
     for e in result.ner:
         print(f"  {e.type:<24} {e.text}")
 
