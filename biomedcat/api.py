@@ -1,6 +1,6 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from p'ydantic import BaseModel
+from pydantic import BaseModel
 from typing import Optional
 import shutil
 import json
@@ -81,7 +81,7 @@ async def list_runs():
 
     runs = []
     # Iterate through all .json files in the output directory
-    for file_path in output_dir.glob("*.json"):
+    for file_path in output:
         runs.append({
             "filename": file_path.name,
             "url": f"/results/{file_path.name}"
@@ -119,4 +119,4 @@ async def sse_endpoint():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvancorn.run(app, host="0.0.0.0", port=8000)
