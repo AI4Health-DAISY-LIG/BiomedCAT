@@ -1,8 +1,9 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from p'ydantic import BaseModel
 from typing import Optional
 import shutil
+import json
 from pathlib import Path
 
 from biomedcat.pipeline import process_file
@@ -31,7 +32,7 @@ async def start_processing(request: ProcessRequest, background_tasks: Background
             content={
                 "message": "Processing started",
                 "file_path": request.file_path,
-                "model_id": request.model
+                "model_id": request.model_id
             }
         )
     except Exception as e:
@@ -67,6 +68,43 @@ async def upload_file(file: UploadFile, background_tasks: BackgroundTasks, model
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+@app.get("/runs")
+async def list_runs():
+    """
+    Lists all completed pipeline runs found in the output directory.
+    Returns a list of objects containing the filename and its access URL.
+    """
+    output_dir = Path(settings.output_path)
+    if not output_dir.exists():
+        return []
+
+    runs = []
+    # Iterate through all .json files in the output directory
+    for file_path in output_dir.glob("*.json"):
+        runs.append({
+            "filename": file_path.name,
+            "url": f"/results/{file_path.name}"
+        })
+    
+    return runs
+
+@app.get("/results/{filename}")
+async def get_result(filename: str):
+    """
+    Retrieves the full JSON content of a specific pipeline run.
+    """
+    # Use .name to prevent path traversal attacks
+    file_path = Path(settings.output_path) / Path(filename).name
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Result file not found.")
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading result file: {str(e)}")
 
 @app.get("/events")
 async def sse_endpoint():
