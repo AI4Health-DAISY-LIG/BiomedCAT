@@ -2,35 +2,35 @@ import os
 
 class Settings:
     """
-    Configuration de l'application BiomedCAT.
-    Les variables peuvent être surchargées via les variables d'environnement Docker.
+    BiomedCAT application configuration.
+    Variables can be overridden via Docker environment variables.
     """
     def __init__(self):
-        # URL de l'instance Ollama (par défaut vers l'hôte via le pont Docker)
+        # URL of the Ollama instance (default to host via Docker bridge)
         self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
         
-        # Modèle utilisé pour l'inférence
+        # Model used for inference
         # self.model_name = os.getenv("OLLAMA_MODEL", "llama3.1")
         
-        # Chemins de travail (montés via Docker volumes)
+        # Working paths (mounted via Docker volumes)
         self.dataset_path = os.getenv("DATASET_PATH", "/app/data")
         self.output_path = os.getenv("OUTPUT_PATH", "/app/output")
         
-        # Configuration du pipeline
+        # Pipeline configuration
         self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
         self.timeout = int(os.getenv("TIMEOUT", "300"))
 
-        # --- Attributs requis par le pipeline (pour éviter les AttributeError) ---
+        # --- Attributes required by the pipeline (to avoid AttributeError) ---
         
-        # On mappe les modèles de tâches sur le modèle principal par défaut
+        # Map task models to the default main model
         self.glm_model_id = os.getenv("GLM_MODEL_ID", self.model_name)
         self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
 
-        # URLs des services de résolution (à configurer via l'environnement si besoin)
+        # Resolver service URLs (configure via environment if needed)
         self.renci_url = os.getenv("RENCI_URL", "https://renci.org/api")
         self.arax_url = os.getenv("ARAX_URL", "https://arax.ebi.ac.uk/services/api")
 
-        # Limite d'appels API
+        # API call limit
         self.api_limit = int(os.getenv("API_LIMIT", "10"))
 
 settings = Settings()
