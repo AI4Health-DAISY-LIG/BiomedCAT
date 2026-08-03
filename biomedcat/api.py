@@ -81,7 +81,7 @@ async def list_runs():
 
     runs = []
     # Iterate through all .json files in the output directory
-    for file_path in output:
+    for file_path in output_dir.glob("*.json"):
         runs.append({
             "filename": file_path.name,
             "url": f"/results/{file_path.name}"
@@ -119,4 +119,4 @@ async def sse_endpoint():
 
 if __name__ == "__main__":
     import uvicorn
-    uvancorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
