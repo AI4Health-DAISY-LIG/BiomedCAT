@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from biomedcat.config import settings
-from biomedcat.runtime import free_gpu   # importing runtime bootstraps the CUDA env before torch
+# from biomedcat.runtime import free_gpu   # importing runtime bootstraps the CUDA env before torch
 from biomedcat.types import Slide
 
 # Tentative d'importation des dépendances lourdes avec un message d'erreur explicite
@@ -30,6 +30,11 @@ GLM_PROMPT = "Text Recognition:"   # the instruction GLM-OCR was trained to tran
 GLM_MAX_TOKENS = 1536              # cap on tokens generated per image
 GLM_BATCH_SIZE = 8                 # images per generate() call (batching keeps the small model from idling the GPU)
 
+def free_gpu() -> None:
+    """Release Python garbage, then return PyTorch's cached VRAM to the driver if available."""
+    gc.collect() #### TO CHECK
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
     """Convert a .pptx to .pdf via headless LibreOffice and return the PDF path.
