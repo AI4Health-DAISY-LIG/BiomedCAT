@@ -7,10 +7,11 @@ class Settings:
     """
     def __init__(self):
         # URL of the Ollama instance (default to host via Docker bridge)
-        self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+        # self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434") 
         
         # Model used for inference
-        self.model_name = os.getenv("OLLAMA_MODEL", "gemma4:e4b-it-qat")
+        self.model_name = os.getenv("OLLAMA_MODEL", "llama3:8b") # "gemma4:e4b-it-qat"
         
         # Working paths (mounted via Docker volumes)
         self.dataset_path = os.getenv("DATASET_PATH", "/app/data")
