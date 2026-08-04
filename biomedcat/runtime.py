@@ -2,6 +2,7 @@ import logging
 import requests
 from biomedcat.config import settings
 
+
 def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, temperature: float = 0.0) -> str:
     """
     Sends a request to the Ollama API to generate a response.
@@ -35,3 +36,4 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
         logger = logging.getLogger(__name__)
         logger.error(f"Error communicating with Ollama API: {e}")
         return ""
+
