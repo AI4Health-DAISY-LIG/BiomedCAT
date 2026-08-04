@@ -38,7 +38,7 @@ class NERPipeline:
     error_filter) does not have to pass them around by hand.
     """
 
-    def __init__(self, extraction_model_id: str | None = None, classification_model_id: str | None = None):
+    def __init__(self, extraction_model_id: str, classification_model_id: str):
         self.nlp = _get_nlp()      # scispacy (CPU): sentence splitting only
         self.extraction_model_id = extraction_model_id or settings.llm_model_id
         self.classification_model_id = classification_model_id or settings.llm_model_id
@@ -112,17 +112,17 @@ class NERPipeline:
         return out
 
     # --- LLM modules -----------------------------------------------------------------
-
-    def _generate(self, messages: list[dict[str, str]], model_id: str | None = None, max_new_tokens: int = 1024) -> str:
+    def _generate(self, messages: list[dict[str, str]], model_id: str, temperature: float, max_new_tokens: int = 1024) -> str:
         """Greedily decode a chat message list (wraps runtime.generate with this model)."""
         target_model = model_id or self.extraction_model_id
-        return generate(target_model, messages, max_new_tokens, 1.0)
+        return generate(target_model, messages, max_new_tokens, temperature)
 
     def _classify_type(self, term: str, sentence: str) -> str | None:
         """Assign the single most relevant type to a term, or None (ZeroTuneBio Module 2)."""
         raw = self._generate(
             prompts.classification_messages(term, sentence), 
-            model_id=self.classification_model_id, 
+            model_id=self.classification_model_id,
+            temperature=0,
             max_new_tokens=512
         )
 
@@ -150,7 +150,12 @@ class NERPipeline:
             lines.append(f"{e.text} = {e.type}")
         listing = "\n".join(lines)
 
-        raw = self._generate(prompts.error_filter_messages(listing, sentence))
+        raw = self._generate(
+            prompts.error_filter_messages(listing, sentence), 
+            model_id=self.classification_model_id,
+            temperature=0,
+            max_new_tokens=512
+        )
 
         wrong = set()
         for line in raw.splitlines():
@@ -174,7 +179,12 @@ class NERPipeline:
         logger.info("ZeroTuneBio | %s", preview)
 
         # Module 1: extract ALL professional terms (recall-first), then parse the JSON array.
-        raw = self._generate(prompts.extraction_messages(sentence), max_new_tokens=512)
+        raw = self._generate(
+            prompts.extraction_messages(sentence), 
+            self.extraction_model_id,
+            temperature=0.2,
+            max_new_tokens=512
+        )
         try:
             match = re.search(r"\[.*\]", raw, re.DOTALL)
             parsed = json.loads(match.group(0)) if match else json.loads(raw)
@@ -244,14 +254,14 @@ class NERPipeline:
         return unique
 
 
-def run_ner(texts: list[str], model_id: str | None = None) -> list[Entity]:
+def run_ner(texts: list[str], model_id_extraction: str, model_id_classification: str) -> list[Entity]:
     """Extract typed entities from a list of slide texts, loading and freeing the LLM once.
 
     CPU preprocessing (sentence splitting) runs before the model touches the GPU; the model
     is freed in a finally block (scale-to-zero) so a mid-run error cannot leak VRAM and the
     normalization stage inherits a clean GPU.
     """
-    pipe = NERPipeline(extraction_model_id=model_id)
+    pipe = NERPipeline(model_id_extraction,model_id_classification)
 
     sentences = []
     for text in texts:
@@ -283,7 +293,7 @@ if __name__ == "__main__":
 
     print("--- Running NER Test ---")
     try:
-        results = run_ner(test_texts, model_id=settings.llm_model_id)  # "gemma4:e4b-it-qat"
+        results = run_ner(test_texts, settings.extraction_model_id, settings.classification_model_id)  # "gemma4:e4b-it-qat"
         for ent in results:
             print(f"Found: {ent.text} ({ent.type})")
     except Exception as e:
