@@ -13,6 +13,7 @@ import unicodedata
 from biomedcat.runtime import generate   # importing runtime bootstraps CUDA/determinism
 from biomedcat.types import Entity, ENTITY_TYPES
 from biomedcat import prompts
+from biomedcat.config import settings
 import en_core_sci_sm
 
 logger = logging.getLogger(__name__)
@@ -37,17 +38,18 @@ class NERPipeline:
     error_filter) does not have to pass them around by hand.
     """
 
-    def __init__(self, model_id: str | None = None):
+    def __init__(self, extraction_model_id: str | None = None, classification_model_id: str | None = None):
         self.nlp = _get_nlp()      # scispacy (CPU): sentence splitting only
-        self.model_id = model_id
+        self.extraction_model_id = extraction_model_id or settings.llm_model_id
+        self.classification_model_id = classification_model_id or settings.llm_model_id
 
     def load(self):
         """Prepare the pipeline state with the specified model ID."""
-        if not self.model_id:
-            logger.warning("No model_id provided to NERPipeline. Using default.")
+        if not self.extraction_model_id:
+            logger.warning("No extraction_model_id provided to NERPipeline. Using default.")
 
         else:
-            logger.info("Preparing NER pipeline for model: %s", self.model_id)
+            logger.info("Preparing NER pipeline for extraction model: %s", self.extraction_model_id)
 
     # def unload(self):
     #     """Release GPU resources."""
@@ -111,13 +113,18 @@ class NERPipeline:
 
     # --- LLM modules -----------------------------------------------------------------
 
-    def _generate(self, messages: list[dict[str, str]], max_new_tokens: int = 1024) -> str:
+    def _generate(self, messages: list[dict[str, str]], model_id: str | None = None, max_new_tokens: int = 1024) -> str:
         """Greedily decode a chat message list (wraps runtime.generate with this model)."""
-        return generate(self.model_id, messages, max_new_tokens,1.0)
+        target_model = model_id or self.extraction_model_id
+        return generate(target_model, messages, max_new_tokens, 1.0)
 
     def _classify_type(self, term: str, sentence: str) -> str | None:
         """Assign the single most relevant type to a term, or None (ZeroTuneBio Module 2)."""
-        raw = self._generate(prompts.classification_messages(term, sentence), max_new_tokens=512)
+        raw = self._generate(
+            prompts.classification_messages(term, sentence), 
+            model_id=self.classification_model_id, 
+            max_new_tokens=512
+        )
 
         # Read the 'TYPE: X' verdict (the last one). Tolerate case and space/hyphen variants
         # ('Cell Type' -> 'CELL_TYPE') so a valid typing is never misread as NONE and dropped.
@@ -130,7 +137,7 @@ class NERPipeline:
         return verdict if verdict in ENTITY_TYPES else None
 
     def _error_filter(self, typed: list[Entity], sentence: str) -> list[Entity]:
-        """Remove only the typings the model explicitly flags as wrong (ZeroTuneBio Module 3).
+        """Remove only the typings the model explicitly flags as wrong (ZeroTune_Bio Module 3).
 
         The default is KEEP, so a malformed reply or a reformatted term can never silently
         drop a valid entity; it can only remove one the model actually flagged.
@@ -244,7 +251,7 @@ def run_ner(texts: list[str], model_id: str | None = None) -> list[Entity]:
     is freed in a finally block (scale-to-zero) so a mid-run error cannot leak VRAM and the
     normalization stage inherits a clean GPU.
     """
-    pipe = NERPipeline(model_id=model_id)
+    pipe = NERPipeline(extraction_model_id=model_id)
 
     sentences = []
     for text in texts:
