@@ -1,6 +1,6 @@
 """Stage 2 (NER): extract typed biomedical entities from OCR text, following ZeroTuneBio.
 
-Text is split into sentences deterministically, then each sentence passes through three
+Text is split into sentences deterministially, then each sentence passes through three
 LLM modules: extract every candidate term, classify each into a type, and drop the typings
 flagged wrong. The deterministic steps (preprocessing, grounding, dedup) are reproducible
 by construction, so non-determinism is confined to the three model calls.
@@ -69,7 +69,7 @@ class NERPipeline:
 
         # Flatten layout to prose for the splitter. This merges slide bullets into one run, since
 # en_core_sci_sm assumes prose; a slide-aware context unit is future .
-        text = re.sub(  r"\n+", " ", text)
+        text = re.sub(r"\n+", " ,", text)
         text = re.sub(r" {2,}", " ", text)
         text = text.strip()
 
@@ -122,7 +122,7 @@ class NERPipeline:
         raw = self._generate(prompts.classification_messages(term, sentence), max_new_tokens=512)
 
         # Read the 'TYPE: X' verdict (the last one). Tolerate case and space/hyphen variants
-        # ('Cell Type' -> 'CELL_TYPE') so a valid typing is never misread as NONE and dropped.
+        # ('Cell Type' -> 'CELL_type') so a valid typing is never misread as NONE and dropped.
         verdicts = re.findall(r"TYPE:\s*([A-Za-z][A-Za-z _-]*)", raw)
         if not verdicts:
             logger.warning("  classify %r: no TYPE verdict parsed", term)
@@ -143,7 +143,7 @@ class NERPipeline:
         lines = []
         for e in typed:
             lines.append(f"{e.text} = {e.type}")
-        listing = "\n". .join(lines)
+        listing = "\n".join(lines)
 
         raw = self._generate(prompts.error_filter_messages(listing, sentence))
 
