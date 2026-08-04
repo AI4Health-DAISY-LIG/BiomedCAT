@@ -11,12 +11,8 @@ class Settings:
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434") 
         
         # Model used for inference
-        self.model_name = os.getenv("OLLAMA_MODEL", "llama3:8b") # "gemma4:e4b-it-qat"
+        # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"
 
-        # Specific models for different pipeline stages
-        self.extraction_model_id = os.getenv("EXTRACTION_MODEL_ID", "llama3:8b")
-        self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
-        
         # Working paths (mounted via Docker volumes)
         self.dataset_path = os.getenv("DATASET_PATH", "/app/data")
         self.output_path = os.getenv("OUTPUT_PATH", "/app/output")
@@ -28,8 +24,10 @@ class Settings:
         # --- Attributes required by the pipeline (to avoid AttributeError) ---
         
         # Map task models to the default main model
-        self.glm_model_id = os.getenv("GLM_MODEL_ID", self.model_name)
-        self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
+        self.glm_model_id = os.getenv("GLM_MODEL_ID", "zai-org/GLM-OCR")
+        self.extraction_model_id = os.getenv("EXTRACTION_MODEL_ID", "llama3:8b")
+        self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
+        # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
 
         # Resolver service URLs (configure via environment if needed)
         self.renci_url = os.getenv("RENCI_URL", "https://renci.org/api")
