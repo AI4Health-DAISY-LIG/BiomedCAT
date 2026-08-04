@@ -30,7 +30,7 @@ def _get_nlp():
 
 
 class NERPipeline:
-    """Zero-shot biomedical NER over the shared 4-bit Llama, following ZeroTuneBio.
+    """Zero-shot biomedical NER over the shared 4-bit Gemma4, following ZeroTuneBio.
 
     Holds the three pieces of state the modules thread through -- the model, the tokenizer,
     and the scispaCy splitter -- so the deep call tree (extract -> run_zerotune -> classify /
@@ -40,7 +40,7 @@ class NERPipeline:
     def __init__(self, model_id: str | None = None):
         self.tokenizer = None      # heavy LLM, loaded lazily in load()
         self.model = None
-        self.nlp = _get_nlp()      # scispanCy (CPU): sentence splitting only
+        self.nlp = _get_nlp()      # scispacy (CPU): sentence splitting only
         self.model_id = model_id
 
     def load(self):
@@ -68,7 +68,7 @@ class NERPipeline:
         text = re.sub(r"-\n(\w)", r"\1", text)
 
         # Flatten layout to prose for the splitter. This merges slide bullets into one run, since
-# en_core_sci_sm assumes prose; a slide-aware context unit is future .
+        # en_core_sci_sm assumes prose; a slide-aware context unit is future .
         text = re.sub(r"\n+", " ,", text)
         text = re.sub(r" {2,}", " ", text)
         text = text.strip()
@@ -162,7 +162,7 @@ class NERPipeline:
     def run_zerotune(self, sentence: str) -> list[Entity]:
         """Extract typed entities from one sentence through the three ZeroTuneBio modules.
 
-        M1 maximises recall, grounding drops hallucinations, M1 recovers precision by typing,
+        M1 maximises recall, grounding drops hallucinations, M1 recovers precision by typing, M2 use grounded knowledge to classify,
         and M3 removes only typings flagged wrong.
         """
         preview = sentence[:80] + ("..." if len(sentence) > 80 else "")
@@ -266,7 +266,7 @@ if __name__ == "__main__":
     
     # Simple test case
     test_texts = [
-        "The presence of DNA damage in lung cells is significant.",
+        "The presence of DNA damage in lung cel\nls is significant.",
         "Analysis of protein kinase C activity."
     ]
     
