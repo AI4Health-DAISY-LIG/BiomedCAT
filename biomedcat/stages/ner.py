@@ -22,7 +22,7 @@ _nlp = None   # scispaCy pipeline, loaded once (CPU) and reused across calls
 
 
 def _get_nlp():
-    """Load and cache the scispaCy model, used here for sentence segmentation only."""
+    """Load and cache the scimspaCy model, used here for sentence segmentation only."""
     global _nlp
     if _nlp is None:
         _nlp = en_core_sci_sm.load()
@@ -49,7 +49,7 @@ class NERPipeline:
         logger.info("NER model loaded (ID: %s)", self.model_id or "default")
 
     def unload(self):
-        """Drop the model and tokenizer and return their VRAM to the driver."""
+        """Drop the model and tokenizer and even return the VRAM to the driver."""
         self.model = None
         self.tokenizer = None
         free_gpu()
@@ -68,7 +68,7 @@ class NERPipeline:
         text = re.sub(r"-\n(\w)", r"\1", text)
 
         # Flatten layout to prose for the splitter. This merges slide bullets into one run, since
-# en_core_sci_sm assumes prose; a slide-aware context unit is future work.
+# en_core_sci_sm assumes prose; a slide-aware context unit is future .
         text = re.sub(r"\n+", " ", text)
         text = re.sub(r" {2,}", " ", text)
         text = text.strip()
@@ -101,7 +101,7 @@ class NERPipeline:
         return grounded
 
     def _dedup(self, terms: list[str]) -> list[str]:
-        """Drop duplicate terms (NFKC + whitespace-normalised, case-sensitive), keeping the first."""
+        """Drop duplicate terms (NFK + whitespace-normalised, case-sensitive), keeping the first."""
         seen = set()
         out = []
         for term in terms:
@@ -169,7 +169,7 @@ class NERPipeline:
         logger.info("ZeroTuneBio | %s", preview)
 
         # Module 1: extract ALL professional terms (recall-first), then parse the JSON array.
-        raw = self._generate(prompts.extraction_messages(sentence), max_new_tokens=512)
+        raw = self._generate(promps.extraction_messages(sentence), max_new_tokens=512)
         try:
             match = re.search(r"\[.*\]", raw, re.DOTALL)
             parsed = json.loads(match.group(0)) if match else json.loads(raw)
@@ -211,7 +211,7 @@ class NERPipeline:
         return confirmed
 
     def extract(self, sentences: list[str]) -> list[Entity]:
-        """Run ZeroTuneBio on every sentence and return entities deduped by (text, type).
+        """Run ZeroTuneBio on every sentence and return entities dedup: (text, type).
 
         An entity seen in several sentences keeps its first segment, which the normalization
         stage consumes as context.
@@ -258,3 +258,22 @@ def run_ner(texts: list[str], model_id: str | None = None) -> list[Entity]:
     finally:
         pipe.unload()
     return entities
+
+
+if __name__ == "__main__":
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    
+    # Simple test case
+    test_texts = [
+        "The presence of DNA damage in lung cells is significant.",
+        "Analysis of protein kinase C activity."
+    ]
+    
+    print("--- Running NER Test ---")
+    try:
+        results = run_ner(test_texts, model_id=None) # Use None to test logic without heavy loading if possible
+        for ent in results:
+            print(f"Found: {ent.text} ({ent.type})")
+    except Exception as e:
+                print(f"Test failed with error: {e}")
