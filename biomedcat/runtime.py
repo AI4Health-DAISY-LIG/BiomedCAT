@@ -1,12 +1,11 @@
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+os.environ["CUDA_WORKSPACE_CONFIG"] = ":4096:8"
 
 import gc
 import logging
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from huggingface_hub import login
 from biomedcat.config import settings
 
 # Ensure deterministic behavior for reproducibility
@@ -19,12 +18,6 @@ def free_gpu() -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-
-def hf_login() -> None:
-    """Authenticate to Hugging Face for gated models (e.g., Llama-3) using HF_TOKEN or settings."""
-    token = os.environ.get("HF_TOKEN") or settings.hf_token
-    if token:
-        login(token=token)
 
 def build_4bit_config() -> BitsAndBytesConfig:
     """Configure 4-bit NF4 quantization with double quantization for VRAM efficiency."""
@@ -48,8 +41,7 @@ def build_llm(model_id: str | None = None):
 
     Returns:
         tuple: (tokenizer, model)
-    """
-    hf_login()   # Authenticate if token is provided
+    """ # Authenticate if token is provided
     free_gpu()   # Clear VRAM before loading new model
     
     target_model_id = model_id or settings.llm_model_id

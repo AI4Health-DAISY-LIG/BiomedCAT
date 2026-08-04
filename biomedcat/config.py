@@ -10,7 +10,7 @@ class Settings:
         self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
         
         # Model used for inference
-        # self.model_name = os.getenv("OLLAMA_MODEL", "llama3.1")
+        self.model_name = os.getenv("OLLAMA_MODEL", "gemma4:e4b-it-qat")
         
         # Working paths (mounted via Docker volumes)
         self.dataset_path = os.getenv("DATASET_PATH", "/app/data")
