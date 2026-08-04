@@ -3,6 +3,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 import gc
+import logging
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from huggingface_hub import login
@@ -88,8 +89,7 @@ def generate(model, tokenizer, messages: list[dict[str, str]], max_new_tokens: i
     # Prepare inputs using the model's specific chat template
     inputs = tokenizer.apply_chat_template(
         messages,
-        add_generation_prompt=
-True,
+        add_generation_prompt=True,
         return_tensors="pt",
         return_dict=True,
     ).to(model.device)
