@@ -11,7 +11,7 @@ from biomedcat.types import Entity, TYPE_DEFINITIONS
 
 # --- NER Module 1: extract all candidate terms (recall-first, few-shot) ---
 _EXTRACTOR_SYSTEM = (
-    "You are a biomedical text analyst. "
+    "You are a biomedical ontologist and bioinformatician. "
     "Extract professional biomedical terms from the given text."
 )
 
@@ -23,7 +23,7 @@ def extraction_messages(sentence: str) -> list[dict[str, str]]:
         {"role": "user", "content": (
             "Identify ALL biomedical professional terms and concepts mentioned in the text below.\n"
             "Do NOT filter or judge them -- list every professional term to maximise recall.\n"
-            "Ensure that multi-word concepts (composite terms) are extracted as a single complete phrase.\n"
+            "Ensure that multi-word concepts (composite terms) are extracted as a single complete phrase representing a concept.\n"
             "Return ONLY a valid JSON array of strings, exactly as they appear in the text.\n\n"
             "Text: The TP53 gene mutation is common in non-small cell lung cancer.\nTerms:"
         )},
