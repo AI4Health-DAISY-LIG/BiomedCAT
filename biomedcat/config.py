@@ -12,6 +12,10 @@ class Settings:
         
         # Model used for inference
         self.model_name = os.getenv("OLLAMA_MODEL", "llama3:8b") # "gemma4:e4b-it-qat"
+
+        # Specific models for different pipeline stages
+        self.extraction_model_id = os.getenv("EXTRACTION_MODEL_ID", "llama3:8b")
+        self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
         
         # Working paths (mounted via Docker volumes)
         self.dataset_path = os.getenv("DATASET_PATH", "/app/data")
