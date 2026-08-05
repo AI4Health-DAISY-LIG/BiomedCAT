@@ -6,9 +6,11 @@ orchestration logic in the stages. Each function returns a chat `messages` list 
 hand to runtime.generate. The module is torch-free: it formats the type vocabulary itself
 and takes the remaining dynamic pieces (candidate menu, verdict listing) as strings.
 """
+import json
 from biomedcat.types import Entity, TYPE_DEFINITIONS
 from biomedcat.data import 
 
+_BIOLINK_TYPES_CACHE = None
 
 # --- NER Module 1: extract all candidate terms (recall-first, few-shot) ---
 _EXTRACTOR_SYSTEM = (
@@ -61,10 +63,24 @@ def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
 
 def classification_messages_biolink(term: str, sentence: str) -> list[dict[str, str]]:
     """Explain a term in context, then assign it one entity type or NONE."""
-    parts = []
-    for name, gloss in TYPE_DEFINITIONS.items():
-        parts.append(f"{name} ({gloss})")
-    type_defs = ", ".join(parts)
+    global _BIOLINK_TYPES_CACHE
+    
+    if _BIOLINK_TYPES_CACHE is None:
+        parts = []
+        try:
+            with open("biolink_classes_flat.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for name, entry in data.items():
+                definition = entry.get("definition")
+                if definition:
+                    parts.append(f"{name} ({definition})")
+            _BIOLINK_TYPES_CACHE = ", ".join(parts)
+        except Exception:
+            # Fallback to TYPE_DEFINITIONS if file loading fails
+            parts = [f"{n} ({g})" for n, g in TYPE_DEFINITIONS.items()]
+            _BIOLINK_TYPES_CACHE = ", ".join(parts)
+
+    type_defs = _BIOLINK_TYPES_CACHE
 
     return [
         {"role": "system", "content": _CLASSIFIER_SYSTEM},
