@@ -8,7 +8,6 @@ and takes the remaining dynamic pieces (candidate menu, verdict listing) as stri
 """
 import json
 from biomedcat.types import Entity, TYPE_DEFINITIONS
-from biomedcat.data import 
 
 _BIOLINK_TYPES_CACHE = None
 
@@ -36,7 +35,7 @@ def extraction_messages(sentence: str) -> list[dict[str, str]]:
 
 
 # --- NER Module 2: classify one grounded term into a single type (or NONE) ---
-_CLASSIFIER_SYSTEM = "You are a strict biomedical annotation expert."
+_CLASSIFI_SYSTEM = "You are a strict biomedical annotation expert."
 
 
 def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
@@ -47,7 +46,7 @@ def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
     type_defs = ", ".join(parts)
 
     return [
-        {"role": "system", "content": _CLASSIFIER_SYSTEM},
+        {"role": "system", "content": _CLASSIFI_SYSTEM},
         {"role": "user", "content": (
             f"Sentence: {sentence}\n\n"
             f'Entity: "{term}"\n\n'
@@ -83,7 +82,7 @@ def classification_messages_biolink(term: str, sentence: str) -> list[dict[str, 
     type_defs = _BIOLINK_TYPES_CACHE
 
     return [
-        {"role": "system", "content": _CLASSIFIER_SYSTEM},
+        {"role": "system", "content": _CLASSIFI_SYSTEM},
         {"role": "user", "content": (
             f"Sentence: {sentence}\n\n"
             f'Entity: "{term}"\n\n'
@@ -91,7 +90,7 @@ def classification_messages_biolink(term: str, sentence: str) -> list[dict[str, 
             "Step 2: Based on that meaning, choose the SINGLE most relevant type, "
             f"or NONE if it does not clearly belong to any of:\n{type_defs}.\n"
             "Answer NONE for anything that is not itself a biomedical concept, such as "
-            "a person's name, an author citation, a journal name, or a URL, or any personal information.\n"
+            "a person as a person's name, an author citation, a journal name, or a URL, or any personal information.\n"
             "End your answer with a final line in exactly this form:\n"
             "TYPE: <one type or NONE>"
         )},
