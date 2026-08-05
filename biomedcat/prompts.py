@@ -7,6 +7,7 @@ hand to runtime.generate. The module is torch-free: it formats the type vocabula
 and takes the remaining dynamic pieces (candidate menu, verdict listing) as strings.
 """
 from biomedcat.types import Entity, TYPE_DEFINITIONS
+from biomedcat.data import 
 
 
 # --- NER Module 1: extract all candidate terms (recall-first, few-shot) ---
@@ -58,6 +59,27 @@ def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
         )},
     ]
 
+def classification_messages_biolink(term: str, sentence: str) -> list[dict[str, str]]:
+    """Explain a term in context, then assign it one entity type or NONE."""
+    parts = []
+    for name, gloss in TYPE_DEFINITIONS.items():
+        parts.append(f"{name} ({gloss})")
+    type_defs = ", ".join(parts)
+
+    return [
+        {"role": "system", "content": _CLASSIFIER_SYSTEM},
+        {"role": "user", "content": (
+            f"Sentence: {sentence}\n\n"
+            f'Entity: "{term}"\n\n'
+            f'Step 1: Explain what "{term}" means in the context of this sentence.\n'
+            "Step 2: Based on that meaning, choose the SINGLE most relevant type, "
+            f"or NONE if it does not clearly belong to any of:\n{type_defs}.\n"
+            "Answer NONE for anything that is not itself a biomedical concept, such as "
+            "a person's name, an author citation, a journal name, or a URL, or any personal information.\n"
+            "End your answer with a final line in exactly this form:\n"
+            "TYPE: <one type or NONE>"
+        )},
+    ]
 
 # --- NER Module 3: flag any type assignment that is wrong ---
 _VERIFIER_SYSTEM = "You are a strict biomedical annotation verifier."
