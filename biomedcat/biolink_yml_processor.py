@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 biolink_yml_processor.py
 ========================
@@ -70,6 +69,7 @@ import re
 import warnings
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, Tuple
+from biomedcat.config import settings
 
 import yaml
 
@@ -109,6 +109,7 @@ def _load_yaml(source: str) -> Dict[str, Any]:
 
     # looks like a URL?
     if resolved.startswith(("http://", "https://")):
+        print("Biolink knowledge updating: importing...")
         import urllib.request
         with urllib.request.urlopen(resolved) as resp:
             raw = resp.read().decode("utf-8")
@@ -116,6 +117,7 @@ def _load_yaml(source: str) -> Dict[str, Any]:
         local_cache = os.path.basename(resolved.split("?")[0]) or "biolink-model.yaml"
         with open(local_cache, "w", encoding="utf-8") as fh:
             fh.write(raw)
+        print(".yml loaded")
         return yaml.safe_load(raw)
 
     raise FileNotFoundError(
@@ -129,7 +131,7 @@ def _load_yaml(source: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def biolink_yml_processor(
-    source: str = "https://github.com/biolink/biolink-model/blob/master/biolink-model.yaml",
+    source: str = settings.biolink_model_data,
     output_nested: str = "biolink_classes_nested.json",
     output_flat: str = "biolink_classes_flat.json",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -148,6 +150,7 @@ def biolink_yml_processor(
     -------
     (nested_dict, flat_dict)
     """
+    print(f"Biolink model source: {source}")
     data = _load_yaml(source)
     classes_section: Dict[str, Any] = data.get("classes", {})
 
@@ -379,10 +382,6 @@ def search_by_keyword(
     return sorted(results)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     import argparse
 
@@ -399,7 +398,7 @@ if __name__ == "__main__":
         "--nested-out",
         default="biolink_classes_nested.json",
         help="Output path for nested JSON.",
-    )
+        )
     parser.add_argument(
         "--flat-out",
         default="biolink_classes_flat.json",
