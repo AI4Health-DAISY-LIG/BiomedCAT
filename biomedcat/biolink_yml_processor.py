@@ -98,6 +98,7 @@ def biolink_yml_processor(
     mixin_children_map: Dict[str, List[str]] = defaultdict(list)
 
     # --- First Pass: Build enriched entries -------------------------------
+    counter_ex = 0
     for class_name, class_def in classes_section.items():
         if not isinstance(class_def, dict):
             continue
@@ -110,11 +111,50 @@ def biolink_yml_processor(
         class_uri = class_def.get("class_uri")
         
         # Requirement 3: Handle examples with truncation to prevent context saturation
-        raw_examples = class_def.append_to_list if hasattr(class_def, 'append_to_list') else class_def.get("examples", []) or []
-        examples = raw_examples[:max_examples]
+        raw_examples = class_def.get("examples", [])                                                                                                                                                       
+        examples = []                                                                                                                                                                                      
+                                                                                                                                                                                                           
+        if isinstance(raw_examples, list):
+            if len(raw_examples) != 0:
+                counter_ex += 1
+                extracted_texts = []
+                for num_examples, ex in enumerate(raw_examples): # if list of dicts
+                    if num_examples <= 5:
+                        if isinstance(ex,str):
+                            extracted_texts.append(raw_examples) # HARD TRUNCATION                                                                                                                                                        
+                        elif isinstance(ex, dict):
+                                text_parts = []
+                                for v in ex.values():
+                                    if isinstance(v, (str, int)):
+                                        text_parts.append(str(v))
+                                    elif isinstance(v,dict):
+                                        text_parts.append(" ".join([str(v1) for v1 in v.values()]))
+                                    else:
+                                        print("Could not parse the example.")                                                                                              
+                                if text_parts:                                                                                                                                                                         
+                                    extracted_texts.append(" ".join(text_parts))                                                                                                                                       
+                        else:                                                                                                                                      
+                            extracted_texts.append(str(ex))
+                
+            else:
+                extracted_texts = '' 
+        elif isinstance(raw_examples, str):
+            extracted_texts = raw_examples 
+        elif isinstance(raw_examples, dict):                                                                                                                                                                          
+            for entry in raw_examples.values():                                                                                                                                                            
+                if isinstance(entry, dict):                                                                                                                                                                
+                    # On concatène toutes les valeurs textuelles de l'objet (value, description, etc.)                                                                                                     
+                    text_parts = [str(v) for v in entry.values() if isinstance(v, (str, int))]                                                                                                             
+                    if text_parts:                                                                                                                                                                         
+                        extracted_texts.append(" ".join(text_parts))                                                                                                                                       
+                else:                                                                                                                                      
+                    extracted_texts.append(str(entry)) 
+                                                                                                                                                   
+        examples = extracted_texts # HARD TRUNCATION
 
         # Requirement 1: Augmented Sentence for Dense Embedding (Doc_Text)
-        ex_string = ", ".join(examples)
+        ex_string = "; ".join(examples)
+
         doc_text = f"Class: {class_name}. Definition: {definition}. Examples: {ex_string}."
 
         # Requirement 2: Structured Metadata for Agent and Sparse BM25
@@ -146,19 +186,20 @@ def biolink_yml_processor(
             warnings.warn(f"Class {class_name!r} has orphan parent {p!r}", stacklevel=2)
 
     # --- Second Pass: Build hierarchy -------------------------------------
-    for class_name, entry in flat.items():
-        meta = entry["metadata"]
-        parent = meta["parent"]
-        if parent and parent in flat:
-            meta["siblings"] = sorted(c for c in flat[parent]["metadata"]["children"] if c != class_name)
-        elif parent and parent in children_map:
-            meta["siblings"] = sorted(c for c in children_map[parent] if c != class_name)
-        else:
-            meta["siblings"] = []
-        
-        # Add children to the metadata of the parent for tree traversal
-        if parent in flat:
-            flat[parent]["metadata"]["children"] = sorted(children_map.get(parent, []))
+    for class_name, entry in flat.items():                                                                                 
+        meta = entry["metadata"]                                                                                           
+        parent = meta["parent"]                                                                                            
+                                                                                                                           
+        # Utilisation de children_map qui est déjà complet et fiable                                                       
+        if parent and parent in flat:                                                                                      
+            # On récupère les enfants via le map, pas via le metadata du parent                                            
+            parent_children = children_map.get(parent, [])                                                                 
+            meta["siblings"] = sorted(c for c in parent_children if c != class_name)                                       
+                                                                                                                           
+            # On met à jour le metadata du parent pour la structure arborescente (Nested Tree)                             
+            flat[parent]["metadata"]["children"] = sorted(parent_children)                                                 
+        else:                                                                                                              
+            meta["siblings"] = [] 
 
     # --- Third Pass: Ancestors & Descendants ------------------------------
     for class_name, entry in flat.items():
@@ -215,7 +256,7 @@ def biolink_yml_processor(
 
 def _collect_descendants(node: str, children_map: Dict[str, List[str]]) -> List[str]:
     """Return all transitive descendants of node."""
-    result: List[[str]] = [] # Note: type hint fix needed if strictly following typing
+    result: List[str] = [] # Note: type hint fix needed if strictly following typing
     res: List[str] = []
     for child in children_map.get(node, []):
         res.append(child)
@@ -238,8 +279,6 @@ def _build_tree_node(
         "class_uri": meta.get("class_uri"),
         "biolink_definition": meta.get("biolink_definition"),
     }
-    # Correcting the key access for mixins based on the flat structure created above
-    node["mixins"] = entry["mixins"]
 
     child_names = sorted(children_map.get(name, []))
     if child_names:
@@ -248,3 +287,8 @@ def _build_tree_node(
             for child in child_names
         }
     return node
+
+if __name__ == "__main__":
+    print ("Loading state of the art data model and computing local knowledge base...")
+    nested_result, flat_result = biolink_yml_processor()
+    print("biolink data model processing... done.")
