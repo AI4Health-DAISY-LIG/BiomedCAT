@@ -9,7 +9,6 @@ and takes the remaining dynamic pieces (candidate menu, verdict listing) as stri
 import json
 from biomedcat.types import Entity, TYPE_DEFINITIONS
 
-_BIOLINK_TYPES_CACHE = None
 
 # --- NER Module 1: extract all candidate terms (recall-first, few-shot) ---
 _EXTRACTOR_SYSTEM = (
@@ -35,7 +34,7 @@ def extraction_messages(sentence: str) -> list[dict[str, str]]:
 
 
 # --- NER Module 2: classify one grounded term into a single type (or NONE) ---
-_CLASSIFI_SYSTEM = "You are a strict biomedical annotation expert."
+_CLASSIFIER_SYSTEM = "You are a strict biomedical annotation expert."
 
 
 def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
@@ -46,7 +45,7 @@ def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
     type_defs = ", ".join(parts)
 
     return [
-        {"role": "system", "content": _CLASSIFI_SYSTEM},
+        {"role": "system", "content": _CLASSIFIER_SYSTEM},
         {"role": "user", "content": (
             f"Sentence: {sentence}\n\n"
             f'Entity: "{term}"\n\n'
@@ -62,27 +61,28 @@ def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
 
 def classification_messages_biolink(term: str, sentence: str) -> list[dict[str, str]]:
     """Explain a term in context, then assign it one entity type or NONE."""
-    global _BIOLINK_TYPES_CACHE
-    
-    if _BIOLINK_TYPES_CACHE is None:
+    global BIOLINK_TYPES_CACHE
+    if BIOLINK_TYPES_CACHE is None:
         parts = []
         try:
-            with open("biolink_classes_flat.json", "r", encoding="utf-8") as f:
+            print("Loading Biolink:")
+            with open(DATA_FILE_PATH, "r", encoding="utf-8") as f: 
                 data = json.load(f)
             for name, entry in data.items():
                 definition = entry.get("definition")
                 if definition:
                     parts.append(f"{name} ({definition})")
-            _BIOLINK_TYPES_CACHE = ", ".join(parts)
+            BIOLINK_TYPES_CACHE = ", ".join(parts)
+            print("Loading Biolink: done.")
         except Exception:
             # Fallback to TYPE_DEFINITIONS if file loading fails
             parts = [f"{n} ({g})" for n, g in TYPE_DEFINITIONS.items()]
-            _BIOLINK_TYPES_CACHE = ", ".join(parts)
+            BIOLINK_TYPES_CACHE = ", ".join(parts)
 
-    type_defs = _BIOLINK_TYPES_CACHE
+    type_defs = BIOLINK_TYPES_CACHE
 
     return [
-        {"role": "system", "content": _CLASSIFI_SYSTEM},
+        {"role": "system", "content": _CLASSIFIER_SYSTEM},
         {"role": "user", "content": (
             f"Sentence: {sentence}\n\n"
             f'Entity: "{term}"\n\n'
