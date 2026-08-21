@@ -9,6 +9,8 @@ class Settings:
         # URL of the Ollama instance (default to host via Docker bridge)
         # self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434") 
+
+        self.biolink_model_data = "https://github.com/biolink/biolink-model/blob/master/biolink-model.yaml"
         
         # Model used for inference
         # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"
@@ -25,6 +27,7 @@ class Settings:
         
         # Map task models to the default main model
         self.glm_model_id = os.getenv("GLM_MODEL_ID", "zai-org/GLM-OCR")
+        self.RAG_embedding_model = os.getenv("GLM_MODEL_ID", "nomic-embed-text")
         self.extraction_model_id = os.getenv("EXTRACTION_MODEL_ID", "llama3:8b")
         self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
         # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
