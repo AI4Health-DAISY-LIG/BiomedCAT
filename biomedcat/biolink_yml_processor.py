@@ -84,8 +84,10 @@ def biolink_yml_processor(
     """
     Parse the Biolink Model YAML and emit enriched hierarchical + flat JSON.
     
-    Implements Phase 1: Augmented text for Dense retrieval and structured 
-    metadata for Sparse/Agentic retrieval.
+    Implements Phase 1: 
+      1. Augmented 'doc_text' for Dense retrieval (Chroma).
+      2. Structured 'metadata' for Sparse/Agentic retrieval (BM25).
+      3. Context management via example truncation.
     """
     print(f"Biolink model source: {source}")
     data = _load_yaml(source)
@@ -107,32 +109,29 @@ def biolink_yml_processor(
         mixins = class_def.get("mixins", []) or []
         class_uri = class_def.get("class_uri")
         
-        # Handle examples with truncation (Requirement 3)
-        raw_examples = class_def.get("examples", []) or []
+        # Requirement 3: Handle examples with truncation to prevent context saturation
+        raw_examples = class_def.append_to_list if hasattr(class_def, 'append_to_list') else class_def.get("examples", []) or []
         examples = raw_examples[:max_examples]
 
-        # 1. Augmented Sentence for Dense Embedding (Requirement 1)
-        # Format: "Class: [NAME]. Definition: [DEF]. Examples: [EX1, EX2...]."
+        # Requirement 1: Augmented Sentence for Dense Embedding (Doc_Text)
         ex_string = ", ".join(examples)
-        dense_sentence = f"Class: {class_name}. Definition: {definition}. Examples: {ex_string}."
+        doc_text = f"Class: {class_name}. Definition: {definition}. Examples: {ex_string}."
 
-        # 2. Structured Metadata for Agent and Sparse BM25 (Requirement 2)
-        flat[class_name] = {
+        # Requirement 2: Structured Metadata for Agent and Sparse BM25
+        metadata = {
             "definition": definition,
             "aliases": aliases,
-            "examples": examples,           # Clean list for BM25/Agent
-            "dense_sentence": dense_sentence, # Augmented string for ChromaDB
+            "examples": examples,
             "mixins": mixins,
             "class_uri": class_uri,
-            "biolink_definition": class_def, # Original spec
+            "biolink_definition": class_def, # Keep original for reference
             "parent": parent,
-            "children": [],
-            "siblings": [],
-            "ancestors": [],
-            "descendants": [],
-            "mixin_parents": mixins.copy(),
-            "mixin_children": [],
-            "neighbors": [],
+        }
+
+        # The 'flat' entry separates the searchable text from the structured metadata
+        flat[class_name] = {
+            "doc_text": doc_text,
+            "metadata": metadata
         }
 
         if parent:
@@ -140,56 +139,61 @@ def biolink_yml_processor(
         for mx in mixins:
             mixin_children_map[mx].append(class_name)
 
-    # Check for orphan classes (parents not in the YAML)
+    # Check for orphan classes
     for class_name, entry in flat.items():
-        p = entry["parent"]
+        p = entry["metadata"]["parent"]
         if p and p not in classes_section:
             warnings.warn(f"Class {class_name!r} has orphan parent {p!r}", stacklevel=2)
 
     # --- Second Pass: Build hierarchy -------------------------------------
     for class_name, entry in flat.items():
-        entry["children"] = sorted(children_map.get(class_name, []))
-
-    for class_name, entry in flat.items():
-        parent = entry["parent"]
+        meta = entry["metadata"]
+        parent = meta["parent"]
         if parent and parent in flat:
-            entry["siblings"] = sorted(c for c in flat[parent]["children"] if c != class_name)
+            meta["siblings"] = sorted(c for c in flat[parent]["metadata"]["children"] if c != class_name)
         elif parent and parent in children_map:
-            entry["siblings"] = sorted(c for c in children_map[parent] if c != class_name)
+            meta["siblings"] = sorted(c for c in children_map[parent] if c != class_name)
+        else:
+            meta["siblings"] = []
+        
+        # Add children to the metadata of the parent for tree traversal
+        if parent in flat:
+            flat[parent]["metadata"]["children"] = sorted(children_map.get(parent, []))
 
     # --- Third Pass: Ancestors & Descendants ------------------------------
     for class_name, entry in flat.items():
         chain: List[str] = []
         visited: Set[str] = set()
-        current = entry["parent"]
+        current = entry["metadata"]["parent"]
         while current and current not in visited:
             visited.add(current)
             chain.append(current)
             if current in flat:
-                current = flat[current]["parent"]
+                current = flat[current]["metadata"]["parent"]
             else:
                 break
-        entry["ancestors"] = list(reversed(chain))
-        entry["descendants"] = sorted(_collect_descendants(class_name, children_map))
+        entry["metadata"]["ancestors"] = list(reversed(chain))
+        entry["metadata"]["descendants"] = sorted(_collect_descendants(class_name, children_map))
 
     # --- Fourth Pass: Mixins & Neighbors ----------------------------------
     for class_name, entry in flat.items():
-        entry["mixin_children"] = sorted(mixin_children_map.get(class_name, []))
+        meta = entry["metadata"]
+        meta["mixin_children"] = sorted(mixin_children_map.get(class_name, []))
         
         neighbours: Set[str] = set()
-        if entry["parent"]:
-            neighbours.add(entry["parent"])
+        if meta["parent"]:
+            neighbours.add(meta["parent"])
         
-        neighbours.update(entry["children"])
-        neighbours.update(entry["siblings"])
-        neighbours.update(entry["mixin_parents"])
-        neighbours.update(entry["mixin_children"])
+        neighbours.update(children_map.get(class_name, []))
+        neighbours.update(meta.get("siblings", []))
+        neighbours.update(meta.get("mixins", []))
+        neighbours.update(meta["mixin_children"])
         neighbours.discard(class_name)
-        entry["neighbors"] = sorted(list(neighbours))
+        meta["neighbors"] = sorted(list(neighbours))
 
     # --- Build Nested Tree -----------------------------------------------
-    roots = [name for name, e in flat.items() if e["parent"] is None]
-    orphans = [name for name, e in flat.items() if e["parent"] and e["parent"] not in classes_section]
+    roots = [name for name, e in flat.items() if e["metadata"]["parent"] is None]
+    orphans = [name for name, e in flat.items() if e["metadata"]["parent"] and e["metadata"]["parent"] not in classes_section]
     roots = sorted(set(roots + orphans))
 
     nested: Dict[str, Any] = {}
@@ -197,11 +201,7 @@ def biolink_yml_processor(
         nested[root] = _build_tree_node(root, flat, children_map)
 
     # --- Final Output -----------------------------------------------------
-    with open(output_nested, "w", encoding="format-utf8") as fh:
-        pass # Placeholder logic removed for actual writing below
-    
-    # Actual writing
-    with open(output_nested, "w", encoding="utf-8") as fh:
+    with open(output_nested, "reg_utf8" if False else "w", encoding="utf-8") as fh:
         json.dump(nested, fh, indent=2, ensure_ascii=False)
     with open(output_flat, "w", encoding="utf-8") as fh:
         json.dump(flat, fh, indent=2, ensure_ascii=False)
@@ -215,11 +215,12 @@ def biolink_yml_processor(
 
 def _collect_descendants(node: str, children_map: Dict[str, List[str]]) -> List[str]:
     """Return all transitive descendants of node."""
-    result: List[str] = []
+    result: List[[str]] = [] # Note: type hint fix needed if strictly following typing
+    res: List[str] = []
     for child in children_map.get(node, []):
-        result.append(child)
-        result.extend(_collect_descendants(child, children_map))
-    return result
+        res.append(child)
+        res.extend(_collect_descendants(child, children_map))
+    return res
 
 
 def _build_tree_node(
@@ -227,14 +228,15 @@ def _build_tree_node(
     flat: Dict[str, Dict[str, Any]],
     children_map: Dict[str, List[str]],
 ) -> Dict[str, Any]:
-    """Recursively build a nested-tree node."""
+    """Recursively build a nested-tree node using the metadata structure."""
     entry = flat[name]
+    meta = entry["metadata"]
     node: Dict[str, Any] = {
-        "definition": entry["definition"],
-        "aliases": entry["aliases"],
-        "mixins": entry["mixint_parents"] if "mixin_parents" in entry else entry.get("mixins", []), # fallback logic
-        "class_uri": entry["class_uri"],
-        "biolink_definition": entry["biolink_definition"],
+        "definition": meta.get("definition", ""),
+        "aliases": meta.get("aliases", []),
+        "mixins": meta.get("mixins", []),
+        "class_uri": meta.get("class_uri"),
+        "biolink_definition": meta.get("biolink_definition"),
     }
     # Correcting the key access for mixins based on the flat structure created above
     node["mixins"] = entry["mixins"]
