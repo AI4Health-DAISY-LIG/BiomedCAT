@@ -51,7 +51,7 @@ def rag_engine(mock_settings, dummy_biolink_data):
         # On initialise le moteur
         engine = BiomedRAG(mock_settings)
         
-        # On injecte le mock de la collection dans l'instance pour les tests
+        # On injecte le mock de la collection dans l'instance du moteur
         engine.collection = mock_collection
         
         # On construit les index (BM25 sera réel, ChromaDB sera mocké)
@@ -64,9 +64,9 @@ def test_search_hybrid_logic(rag_engine):
     engine, mock_collection = rag_engine
     
     # 1. Simulation de la recherche DENSE (ChromaDB)
-    # On simule que ChromaDB trouve uniquement 'Gene'
+    # On simule que ChromaDB trouve 'Gene'
     mock_collection.query.return_value = {
-        "ids": [["side_effect"]]
+        "ids": [["Gene"]]
     }
 
     # 2. Test de la recherche sémantique (Dense)
@@ -103,6 +103,5 @@ def test_search_empty_results(rag_engine):
     
     results = engine.search("non-existent-term")
     assert isinstance(results, list)
-    # Le résultat peut être vide ou contenir des éléments si BM25 trouve quelque chose, 
-    # mais ici avec un terme inexistant, il doit être vide.
+    # Le résultat peut être vide si BM25 ne trouve rien non plus
     assert len(results) == 0
