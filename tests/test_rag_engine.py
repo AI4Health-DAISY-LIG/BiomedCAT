@@ -63,18 +63,20 @@ def test_search_hybrid_logic(rag_engine):
     """Teste la fusion RRF entre le moteur Dense et Sparse."""
     engine, mock_collection = rag_engine
     
-    # 1. Simulation de la recherche DENSE (ChromaDB)
-    # On simule que ChromaDB trouve 'Gene'
-    mock_collection.query.return_value = {
-        "ids": [["Gene"]]
-    }
+    # Utilisation de side_effect pour que le mock ne pollue pas les autres recherches
+    def query_side_effect(query_texts, n_results):
+        if "heredity" in query_texts[0]:
+            return {"ids": [["Gene"]]}
+        return {"ids": [[]]}
 
-    # 2. Test de la recherche sémantique (Dense)
-    # La requête "heredity" doit retourner Gene via le mock Chroma
+    mock_collection.query.side_effect = query_side_effect
+    
+    # 1. Test de la recherche sémantique (Dense)
+    # La requête "heredry" doit retourner Gene via le mock Chroma
     results_dense = engine.search("heredity")
     assert "Gene" in results_dense
 
-    # 3. Test de la recherche par mot-clé (Sparse - BM25)
+    # 2. Test de la recherche par mot-clé (Sparse - BM25)
     # On cherche "Cancer", qui est un mot-clé dans l'exemple de 'Disease'
     # Le moteur doit trouver 'Disease' via l'index BM25 réel
     results_sparse = engine.search("Cancer")
