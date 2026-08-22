@@ -61,12 +61,12 @@ def rag_engine(mock_settings, dummy_biolink_data):
 
 def test_search_hybrid_logic(rag_engine):
     """Teste la fusion RRF entre le moteur Dense et Sparse."""
-    engine, mock_collection = rag_name_engine = rag_engine
+    engine, mock_collection = rag_engine
     
     # 1. Simulation de la recherche DENSE (ChromaDB)
     # On simule que ChromaDB trouve uniquement 'Gene'
     mock_collection.query.return_value = {
-        "ids": [["Gene"]]
+        "ids": [["side_effect"]]
     }
 
     # 2. Test de la recherche sémantique (Dense)
