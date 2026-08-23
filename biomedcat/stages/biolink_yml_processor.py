@@ -198,12 +198,12 @@ def biolink_yml_processor(
         # Requirement 2: Structured Metadata for Agent and Sparse BM25
         metadata = {
             "definition": definition,
-            "aliases": aliases,
-            "examples": examples,
-            "mixins": mixins,
+            "aliases": ", ".join(aliases) if aliases else "",
+            "examples": "; ".join(examples) if examples else "",
+            "mixins": ", ".join(mixins) if mixins else "",
             "class_uri": class_uri,
-            "biolink_definition": class_def, # Keep original for reference
-            "parent": parent,
+            #"biolink_definition": class_def, # Keep original for reference - cannot add because dict
+            "parent": parent
         }
 
         # The 'flat' entry separates the searchable text from the structured metadata
@@ -225,7 +225,7 @@ def biolink_yml_processor(
 
     # --- Second Pass: Build hierarchy -------------------------------------
     for class_name, entry in flat.items():                                                                                 
-        meta = entry["metadata"]                                                                                           
+        meta = entry["metadata"]                                                                                       
         parent = meta["parent"]                                                                                            
                                                                                                                            
         # Utilisation de children_map qui est déjà complet et fiable                                                       
@@ -238,7 +238,7 @@ def biolink_yml_processor(
             flat[parent]["metadata"]["children"] = sorted(parent_children)                                                 
         else:                                                                                                              
             meta["siblings"] = [] 
-
+    
     # --- Third Pass: Ancestors & Descendants ------------------------------
     for class_name, entry in flat.items():
         chain: List[str] = []
@@ -259,16 +259,16 @@ def biolink_yml_processor(
         meta = entry["metadata"]
         meta["mixin_children"] = sorted(mixin_children_map.get(class_name, []))
         
-        neighbours: Set[str] = set()
+        neighbors: Set[str] = set()
         if meta["parent"]:
-            neighbours.add(meta["parent"])
+            neighbors.add(meta["parent"])
         
-        neighbours.update(children_map.get(class_name, []))
-        neighbours.update(meta.get("siblings", []))
-        neighbours.update(meta.get("mixins", []))
-        neighbours.update(meta["mixin_children"])
-        neighbours.discard(class_name)
-        meta["neighbors"] = sorted(list(neighbours))
+        neighbors.update(children_map.get(class_name, []))
+        neighbors.update(meta.get("siblings", []))
+        neighbors.update(meta.get("mixins", []))
+        neighbors.update(meta["mixin_children"])
+        neighbors.discard(class_name)
+        meta["neighbors"] = sorted(list(neighbors))
 
     # --- Build Nested Tree -----------------------------------------------
     roots = [name for name, e in flat.items() if e["metadata"]["parent"] is None]
@@ -279,13 +279,42 @@ def biolink_yml_processor(
     for root in roots:
         nested[root] = _build_tree_node(root, flat, children_map)
 
+    # --- Clean flat for Chroma indexing:
+    flat_for_chroma = {}
+    keys_to_keep = {"definition","aliases","examples","mixins","class_uri","parent","siblings"}
+    
+    for class_name, entry in flat.items():  
+        new_entry = {                                                                                                                          
+            "doc_text": entry["doc_text"],                                                                                                     
+            "metadata": {}                                                                                                                     
+        }   
+
+        for k in keys_to_keep:                                                                                                                 
+            if k in entry["metadata"]:                                                                                                         
+                val = entry["metadata"][k]                                                                                                     
+                                                                                                                                               
+                if isinstance(val, list):                                                                                                      
+                    # Conversion de la liste en chaîne (ex: ['a', 'b'] -> "a, b")                                                              
+                    new_entry["metadata"][k] = ", ".join(map(str, val)) if val else ""                                                         
+                # elif isinstance(val, dict):                                                           
+                #     new_entry["metadata"][k] = json.dumps(val)                                                                                 
+                elif isinstance(val, (str, int, float, bool)):                                                                                                                          
+                    # Valeur simple (str, int, etc.)                                                                                           
+                    new_entry["metadata"][k] = val
+                elif v is None:
+                    new_entry["metadata"][k] = ""
+                else:
+                    new_entry["metadata"][k] = str(v)                                                                                          
+                                                                                                                                               
+        flat_for_chroma[class_name] = new_entry
+
     # --- Final Output -----------------------------------------------------
     with open(output_nested, "reg_utf8" if False else "w", encoding="utf-8") as fh:
         json.dump(nested, fh, indent=2, ensure_ascii=False)
     with open(output_flat, "w", encoding="utf-8") as fh:
-        json.dump(flat, fh, indent=2, ensure_ascii=False)
+        json.dump(flat_for_chroma, fh, indent=2, ensure_ascii=False)
 
-    return nested, flat
+    return nested, flat_for_chroma
 
 
 # ---------------------------------------------------------------------------
@@ -328,5 +357,5 @@ def _build_tree_node(
 
 if __name__ == "__main__":
     print ("Loading state of the art data model and computing local knowledge base...")
-    run_smart_update(settings.biolobink_model_data, biolink_yml_processor)
+    run_smart_update(settings.biolink_model_data, biolink_yml_processor)
     print("biolink data model processing... done.")

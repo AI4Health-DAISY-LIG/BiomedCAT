@@ -9,7 +9,7 @@ from rank_bm25 import BM25Okapi
 import re
 
 from biomedcat.config import Settings
-from biomedcat.biolink_yml_processor import run_smart_update, biolink_yml_processor
+from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
 
 class BiomedRAG:
     """
@@ -17,33 +17,46 @@ class BiomedRAG:
     Implémente la Phase 2 : Double indexation et Reciprocal Rank Fusion (RRF).
     """
 
-    def __init__(self, config: Settings):
+    def __init__(self, config: Settings, force_rebuild: bool = False):
         self.config = config
         self.data_path = Path(config.internal_data_path) / "biolink_classes_flat.json"
         self.flat_data: Dict[str, Any] = {}
+        self.needs_reindexing = force_rebuild or not Path(config.chroma_db_path).exists()
 
+        # Load ChromaDB
         # Bind embedding model                                                                                                                          
         print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(                                                                                                                     
             model_name=self.config.RAG_embedding_model                                                                                                                                                    
         )
-
         # Indexeurs
         self.chroma_client = chromadb.PersistentClient(path=config.chroma_db_path)
         self.collection = self.chroma_client.get_or_create_collection(name="biomedcat_dense",embedding_function=self.embedding_fn)
-        self.bm25: Optional[BM25Okapi] = None
-        
+
+        # Load Data   
+        if self.data_path.exists():                                                                                                                                                                       
+            self._load_data()                                                                                                                                                                             
+        else:                                                                                                                                                                                             
+            print("[!] Biolink data file not found. Indexing.")                                                                                                                    
+            self.flat_data = {}
+            self.needs_reindexing = True                                                                                                                                                                
+                                                                                                                                                                                                          
+        # Indexation                                                                                                                                                                        
+        if self.needs_reindexing:                                                                                                                                                                         
+            print("[*] Reconstruction de l'index ChromaDB en cours...")                                                                                                                                   
+            self.build_indices()                                                                                                                                                                          
+        else:                                                                                                                                                                                             
+            print("[*] ChromaDB index existing, charging existing DB.")
+
         # Corpus pour BM25 (mapping index -> class_name)
         self._bm25_corpus_map: List[str] = []
         self._bm25_tokenized_corpus: List[List[str]] = []
 
-        if not self.data_path.exists():
-            raise FileNotFoundError(f"Le fichier d'indexation est introuvable : {self.data_path}")
         
-        self._load_data()
+        # self._load_data()
 
     def _load_data(self) -> None:
-        """Charge les données du fichier JSON produit par la Phase 1."""
+        """Charge les données du fichier JSON produit par biolink_yml_processor"""
         with open(self.data_path, "r", encoding="utf-8") as f:
             self.flat_data = json.load(f)
 
@@ -157,11 +170,20 @@ class BiomedRAG:
                 context_parts.append(part)
         
         return "\n".join(context_parts)
-
-if __name__ == "__main__":
-    s = Settings()
-    run_smart_update(source_url=s.biolobink_model_data, processor_func=biolink_yml_processor)
-    RAG = BiomedRAG(s)
-
-
-    print('bob')
+    
+def build_rag(settings: str = Settings()):                                                                                                                                                                              
+                                                                                                                                                                                                          
+    # 1. Verify biolink yml update                                                                                                                          
+    was_updated = run_smart_update(                                                                                                                                                                       
+        source_url=settings.biolink_model_data,                                                                                                                                                         
+        processor_func=biolink_yml_processor                                                                                                                                                              
+    )             # seems always True                                                                                                                                                                                        
+                                                                                                                                                                                                          
+    # 2. Initialize RAG                                                                                                                                  
+    rag_engine = BiomedRAG(settings, force_rebuild=was_updated)                                                                                                                                           
+                                                                                                                                                                                                          
+    print("[+] RAG ready.")
+    return rag_engine                                                                                                                                                                     
+                                                                                                                                                                                                          
+if __name__ == "__main__":                                                                                                                                                                                
+    rag_engine = build_rag()
