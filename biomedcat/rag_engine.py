@@ -1,6 +1,7 @@
 import json
 import numpy as np
 import chromadb
+from chromadb.utils import embedding_functions
 from pathlib import Path
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
@@ -8,6 +9,7 @@ from rank_bm25 import BM25Okapi
 import re
 
 from biomedcat.config import Settings
+from biomedcat.biolink_yml_processor import run_smart_update, biolink_yml_processor
 
 class BiomedRAG:
     """
@@ -17,12 +19,18 @@ class BiomedRAG:
 
     def __init__(self, config: Settings):
         self.config = config
-        self.data_path = Path(config.output_path) / "biolink_classes_flat.json"
+        self.data_path = Path(config.internal_data_path) / "biolink_classes_flat.json"
         self.flat_data: Dict[str, Any] = {}
-        
+
+        # Bind embedding model                                                                                                                          
+        print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(                                                                                                                     
+            model_name=self.config.RAG_embedding_model                                                                                                                                                    
+        )
+
         # Indexeurs
-        self.chroma_client = chromadb.Client()
-        self.collection = self.chroma_client.create_collection(name="biomedcat_dense")
+        self.chroma_client = chromadb.PersistentClient(path=config.chroma_db_path)
+        self.collection = self.chroma_client.get_or_create_collection(name="biomedcat_dense",embedding_function=self.embedding_fn)
         self.bm25: Optional[BM25Okapi] = None
         
         # Corpus pour BM25 (mapping index -> class_name)
@@ -45,7 +53,7 @@ class BiomedRAG:
 
     def build_indices(self) -> None:
         """Construit les index ChromaDB (Dense) et BM21/BM25 (Sparse)."""
-        print(f"[*] Initialisation de l'indexation pour {len(self.flat_data)} classes...")
+        print(f"[*] Indexation starts for {len(self.flat_data)} classes...")
         
         dense_ids = []
         dense_documents = []
@@ -71,7 +79,11 @@ class BiomedRAG:
             
             tokens = self._tokenize(combined_text)
             bm25_corpus_tokens.append(tokens)
-            self._bm25_corpus_map.append(class_name)
+
+        # Indexing BM25
+        if bm25_corpus_tokens:
+            self.bm25 = BM25Okapi(bm25_corpus_tokens)
+            self._bm25_corpus_map = list(self.flat_data.keys()) # Assurer la correspondance
 
         # Injection dans ChromaDB
         if dense_ids:
@@ -81,12 +93,7 @@ class BiomedRAG:
                 metadatas=dense_metadatas
             )
 
-        # Construction de l'index BM25
-        if bm25_corpus_tokens:
-            self.bm25 = BM25Okapi(bm25_corpus_tokens)
-            self._bm25_corpus_map = list(self.flat_data.keys()) # Assurer la correspondance
-
-        print("[+] Indexation terminée avec succès.")
+        print("[+] Indexation : done.")
 
     def search(self, query: str, top_k: int = 5) -> List[str]:
         """
@@ -150,3 +157,11 @@ class BiomedRAG:
                 context_parts.append(part)
         
         return "\n".join(context_parts)
+
+if __name__ == "__main__":
+    s = Settings()
+    run_smart_update(source_url=s.biolobink_model_data, processor_func=biolink_yml_processor)
+    RAG = BiomedRAG(s)
+
+
+    print('bob')
