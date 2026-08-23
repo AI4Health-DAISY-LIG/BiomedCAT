@@ -22,6 +22,52 @@ from biomedcat.events import event_emitter
 
 logger = logging.getLogger(__name__)
 
+DATASET_DIR = Path(settings.dataset_path)
+OUTPUT_DIR  = Path(settings.output_path)
+SUPPORTED   = settings.supported_docs #{".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
+
+def process_doc(path: str) -> PipelineResult:
+    """Run the full OCR -> NER -> Normalization pipeline on a single file.
+
+    Uses the provided model_id for both NER and Normalization stages.
+    """
+    logger.info("=== Processing %s :", path)
+
+    # Stage 1: OCR -> per-slide text.
+    event_emitter.on_stage_change(path, "OCR", "running")
+    t0 = time.perf_counter()
+    slides = run_ocr(path)
+    event_emitter.on_stage_change(path, "OCR", "done")
+    logger.info("OCR done: %d slide(s) in %.1fs", len(slides), time.perf_counter() - t0)
+
+    # Stage 2: NER -> typed entities. Pool every slide's text into one file-level extraction.
+    event_emitter.on_stage_change(path, "NER", "running")
+    texts = []
+    for slide in slides:
+        texts.append(slide.text)
+    t0 = time.perf_counter()
+    entities = run_ner(texts, model=model_id)
+    event_emitter.on_stage_change(path, "NER", "done")
+    logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
+
+    # Stage 3: Normalization -> entities linked to CURIEs.
+    event_emitter.on_stage_change(path, "Norm", "running")
+    t0 = time.perf_counter()
+    results = run_norm(entities, model_id=model_id)
+    event_emitter.on_stage_change(path, "Norm", "done")
+    linked = 0
+    for r in results:
+        if r.curie:
+            linked += 1
+    logger.info("Norm done: %d/%d linked in %.1fs", len(results), len(results), time.perf_counter() - t0)
+
+    return PipelineResult(
+        filename=Path(path).name,
+        ocr=slides,
+        ner=entities, 
+        norm=results,
+    )
+
 
 def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResult:
     """Run the full OCR -> NER -> Normalization pipeline on a single file.
@@ -64,12 +110,6 @@ def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResu
         ner=entities, 
         norm=results,
     )
-
-
-DATASET_DIR = Path(settings.dataset_path)
-OUTPUT_DIR  = Path(settings.output_path)
-SUPPORTED   = {".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
-
 
 class _ConsoleFilter(logging.Filter):
     """Keep the console readable: stage-level progress and real problems only.
