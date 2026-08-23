@@ -21,11 +21,14 @@ import os
 import re
 import warnings
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 from biomedcat.config import settings
+import urllib.request
+from pathlib import Path
 
 import yaml
 
+CACHE_FILE = Path(".biolink_cache.json")
 
 # ---------------------------------------------------------------------------
 # URL / path resolution
@@ -35,6 +38,41 @@ _GITHUB_BLOB_RE = re.compile(
     r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/"
     r"blob/(?P<ref>[^/]+)/(?P<path>.+)$"
 )
+
+def get_remote_etag(url: str) -> str:                                                                                                                                                                     
+    """Récupère l'ETag (identifiant unique de version) via une requête HEAD."""                                                                                                                           
+    try:                                                                                                                                                                                                  
+        # On utilise la méthode HEAD pour ne pas télécharger le fichier, juste les headers                                                                                                                
+        req = urllib.request.Request(url, method='HEAD')                                                                                                                                                  
+        with urllib.request.urlopen(req, timeout=5) as response:                                                                                                                                          
+            return response.getheader('ETag', '')                                                                                                                                                         
+    except Exception as e:                                                                                                                                                                                
+        print(f"[!] Impossible de récupérer l'ETag : {e}")                                                                                                                                                
+        return ""
+
+def run_smart_update(source_url: str, processor_func):                                                                                                                                                    
+    """Lance le processeur uniquement si l'ETag a changé."""                                                                                                                                              
+    remote_etag = get_remote_etag(source_url)                                                                                                                                                             
+    local_cache = {}                                                                                                                                                                                      
+                                                                                                                                                                                                          
+    if CACHE_FILE.exists():                                                                                                                                                                               
+        try:                                                                                                                                                                                              
+            with open(CACHE_FILE, "r") as f:                                                                                                                                                              
+                local_cache = json.load(f)                                                                                                                                                                
+        except json.JSONDecodeError:                                                                                                                                                                      
+            local_cache = {}                                                                                                                                                                              
+                                                                                                                                                                                                          
+    if remote_etag and local_cache.get("etag") == remote_etag:                                                                                                                                            
+        print("[*] Le modèle Biolink est déjà à jour (ETag identique).")                                                                                                                                  
+        return False # Pas de mise à jour effectuée                                                                                                                                                       
+                                                                                                                                                                                                          
+    print(f"[*] Changement détecté ou première exécution (Remote: {remote_etag}). Mise à jour...")                                                                                                        
+    processor_func(source=source_url)                                                                                                                                                                     
+                                                                                                                                                                                                          
+    # Sauvegarde du nouvel ETag                                                                                                                                                                           
+    with open(CACHE_FILE, "w") as f:                                                                                                                                                                      
+        json.dump({"etag": remote_etag}, f)                                                                                                                                                               
+    return True
 
 
 def _resolve_source(source: str) -> str:
@@ -62,7 +100,7 @@ def _load_yaml(source: str) -> Dict[str, Any]:
         with urllib.request.urlopen(resolved) as resp:
             raw = resp.read().decode("utf-8")
         
-        local_cache = os.path.basename(resolved.split("?")[0]) or "data/biolink-model.yaml"
+        local_cache = "data/biolink-model.yaml"
         with open(local_cache, "w", encoding="utf-8") as fh:
             fh.write(raw)
         print(".yml loaded")
@@ -290,5 +328,5 @@ def _build_tree_node(
 
 if __name__ == "__main__":
     print ("Loading state of the art data model and computing local knowledge base...")
-    nested_result, flat_result = biolink_yml_processor()
+    run_smart_update(settings.biolobink_model_data, biolink_yml_processor)
     print("biolink data model processing... done.")
