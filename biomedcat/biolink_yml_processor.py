@@ -62,7 +62,7 @@ def _load_yaml(source: str) -> Dict[str, Any]:
         with urllib.request.urlopen(resolved) as resp:
             raw = resp.read().decode("utf-8")
         
-        local_cache = os.path.basename(resolved.split("?")[0]) or "biolink-model.yaml"
+        local_cache = os.path.basename(resolved.split("?")[0]) or "data/biolink-model.yaml"
         with open(local_cache, "w", encoding="utf-8") as fh:
             fh.write(raw)
         print(".yml loaded")
@@ -77,8 +77,8 @@ def _load_yaml(source: str) -> Dict[str, Any]:
 
 def biolink_yml_processor(
     source: str = settings.biolink_model_data,
-    output_nested: str = "biolink_classes_nested.json",
-    output_flat: str = "biolink_classes_flat.json",
+    output_nested: str = "data/biolink_classes_nested.json",
+    output_flat: str = "data/biolink_classes_flat.json",
     max_examples: int = 5  # Constraint: Prevent context window saturation
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
@@ -119,7 +119,7 @@ def biolink_yml_processor(
                 counter_ex += 1
                 extracted_texts = []
                 for num_examples, ex in enumerate(raw_examples): # if list of dicts
-                    if num_examples <= 5:
+                    if num_examples <= max_examples: # limit number of examples
                         if isinstance(ex,str):
                             extracted_texts.append(raw_examples) # HARD TRUNCATION                                                                                                                                                        
                         elif isinstance(ex, dict):
