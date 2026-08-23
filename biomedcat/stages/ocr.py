@@ -89,11 +89,11 @@ def _iter_batches(kind: str, source):
 
 def load_model():
     """Load the GLM-OCR processor and model into VRAM."""
-    processor = AutoProcessor.from_pretrained(settings.glm_model_id)
+    processor = AutoProcessor.from_pretrained(settings.ocr_model_id)
     processor.tokenizer.padding_side = "left"   # decoder-only batched generation must pad on the left
 
     model = GlmOcrForConditionalGeneration.from_pretrained(
-        settings.glm_model_id,
+        settings.ocr_model_id,
         dtype="auto",
         device_map="auto",
     )
