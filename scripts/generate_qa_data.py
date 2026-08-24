@@ -1,137 +1,166 @@
 import json
-import requests
-import sys
-from pathlib import Path
-from typing import List, Dict, Any
+import yaml
 import ollama
+import pandas as pd
+import numpy.np
+from pathlib import Path
+from typing import List, Dict, Any, Set
+from collections import defaultdict
+from biomedcat.stages.rag_engine import build_rag
+from biomedcat.config import Settings
 
-# Importation du moteur RAG pour accéder aux données réelles de l'index
-try:
-    from biomedcat.stages.rag_engine import build_rag
-    from biomedcat.config import Settings
-except ImportError as e:
-    print(f"Error: Could not import BiomedRAG components. {e}")
-    sys.exit(1)
+# Configuration des chemins
+CONFIG_PATH = Path("scripts/er_test-suite_configuration.yml")
+NESTED_DATA_PATH = Path("data/biolink_classes_nested.json")
+OUTPUT_PARQUET = Path("data/qa_dataset.parquet")
+MODEL_NAME = "gemma4:e_4b-it-qat"
 
-# Configuration
-OLLAMA_API_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "gemma4:e4b-it-qat"
-SAMPLES_PER_CLASS = 5  # Nombre de requêtes à générer par classe pour la significativité statistique
-OUTPUT_FILE = Path("data/qa_data.json")
-
-class QAGenerator:
-    def __init__(self, rag_engine):
+class StratifiedQAGenerator:
+    def __init__(self, rag_engine, nested_data: Dict[str, Any], config: Dict[str, Any]):
         self.rag_engine = rag_engine
-        self.qa_pairs: List[Dict[str, str]] = []
+        self.nested_data = nested_data
+        self.config = config
+        self.all_samples = []
+        # Map pour retrouver la profondeur et le statut de chaque classe
+        self.class_metadata: Dict[str, Dict[str, Any]] = {}
+        self._analyze_hierarchy()
 
-    def _query_ollama(self, class_name: str, definition: str) -> List[str]:
-        """
-        Interroge Ollama pour générer des termes biomédicaux basés sur la définition.
-        Utilise le mode JSON d'Ollama pour une extraction robuste.
-        """
-
-        qa_rag_schema = {                                                                                                                                                                          
-            "type": "array",                                                                                                                                                                       
-            "items": {                                                                                                                                                                             
-                "type": "object",                                                                                                                                                                  
-                "properties": {                                                                                                                                                                    
-                    "query": {"type": "string"},                                                                                                                                                   
-                    "expected_class": {"type": "string"}                                                                                                                                           
-                },                                                                                                                                                                                 
-                "required": ["query", "expected_class"]                                                                                                                                            
-            }                                                                                                                                                                                      
-        } 
+    def _analyze_hierarchy(self):
+        """Calcule la profondeur et le statut (feuille) de chaque classe."""
+        print("[*] Analyzing hierarchy for stratified sampling...")
         
+        # On parcourt l'arborescence pour calculer les profondeurs
+        def traverse(node_name: str, depth: int):
+            is_leaf = True
+            children = self.nested_data.get(node_name, {}).get("children", {})
+            
+            if children:
+                is_leaf = False
+                for child in children:
+                    traverse(child, depth + 1)
+            
+            self.class_metadata[node_name] = {
+                "depth": depth,
+                "is_leaf": is_leaf
+            }
+
+        # On identifie les racines (classes sans parent dans le JSON)
+        roots = [name for name, data in self.nested_data.items() if not data.get("parent")]
+        for root in roots:
+            traverse(root, 1)
+
+    def _get_sampling_plan(self) -> List[str]:
+        """Détermine quelles classes échantillonner selon les contraintes du YAML."""
+        classes_to_sample = []
+        
+        # Extraction des contraintes
+        leaf_cfg = self.config.get("leaf_class", {})
+        depth_cfg = self.config.get("hierarchy_depth", {})
+        
+        # 1. Groupement par bins de profondeur
+        bins = depth_cfg.get("bins", [[1, 99]])
+        
+        # On prépare les classes par strate
+        strata: Dict[str, List[str]] = defaultdict(list)
+        for cls, meta in self.class_metadata.items():
+            # Trouver le bin correspondant
+            assigned_bin = "other"
+            for b in bins:
+                if b[0] <= meta["depth"] <= b[1]:
+                    assigned_bin = f"{b[0]}-{b[1]}"
+                    break
+            
+            # On ajoute un suffixe pour la distinction feuille/non-feuille
+            strat_key = f"depth_{assigned_bin}_leaf_{meta['is_leaf']}"
+            strata[strat_key].append(cls)
+
+        # 2. Sélection des classes (Stratified Sampling)
+        # Pour chaque strate, on choisit un nombre de classes à échantillonner
+        # Note: Dans un vrai scénantion, on viserait le 'target' du YAML
+        for strat_name, classes in strata.items():
+            # On prend un échantillon arbitraire (ex: 2 classes par strate pour l'exemple)
+            # Pour la production, utilisez les valeurs 'min' ou 'target' du YAML
+            sample_size = min(len(classes), 3) 
+            import random
+            selected = random.sample(classes, sample_sample_size := sample_size)
+            classes_to_sample.extend(selected)
+
+        return classes_to_sample
+
+    def _query_ollama(self, class_name: str, definition: str) -> List[Dict[str, str]]:
+        """Génère des paires query/class via Ollama avec schéma JSON strict."""
         prompt = (
-            f"You are a biomedical expert. Given the following Biolink class definition: '{definition}'\n"
-            f"Generate EXACTLY {SAMPLES_PER_CLASS} distinct, short biomedical terms or queries "
-            f"(1-3 words each) that belong to the class '{class_name}'.\n"
-            f"Return the result ONLY as a valid list of EXACTLY {SAMPLES_PER_CLASS} JSON arrays of strings as a list. Example: ["
-            "{"
-            "    'query': 'insulin',"
-            "    'expected_class': 'protein'"
-            "},"
-            "{"
-            "    'query': 'diabetes mellitus',"
-            "    'expected_class': 'disease'"
-            "} ... ]"
+            f"You are a biomedical expert. Given the definition: '{definition}'\n"
+            f"Generate 3 distinct, short biomedical queries (1-3 words) that belong to the class '{class_name}'.\n"
+            f"Return ONLY a JSON array of objects with keys 'query' and 'expected_class'."
         )
 
-        generation_options = {
-            "temperature": 0.0,       # Low = deterministic/factual, High = creative
-            "top_k": 40,              # Limits pool of next-word choices
-            "top_p": 0.9,             # Nucleus sampling threshold
-            "num_ctx": 4096          # Sets the context window length in tokens
+        schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "expected_class": {"type": "string"}
+                },
+                "required": ["query", "expected_class"]
+            }
         }
 
         try:
             response = ollama.chat(
                 model=MODEL_NAME,
-                format=qa_rag_schema,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": "You must bypass your thinking process. Do not use <think> tags. Provide the final output immediately."
-                    },
-                        
-                    {
-                        "role": "user", 
-                         "content": prompt
-                    },
-                ],
-                options=generation_options
+                format=schema,
+                messages=[{"role": "user", "content": prompt}]
             )
-            
-            raw_content = response["message"]["content"]
-            generated_queries = json.loads(raw_content)
-            
-            if isinstance(generated_queries, list):
-                return generated_queries
-            return []
+            return json.loads(response["message"]["content"])
         except Exception as e:
-            print(f"  [!] Error querying Ollama for {class_name}: {e}")
+            print(f"  [!] Error generating for {class_name}: {e}")
             return []
 
     def run(self):
-        """Parcourt toutes les classes de l'index et génère le dataset."""
-        # On récupère toutes les classes présentes dans l'index flat (Chroma/BM25)
-        classes_to_process = self.rag_engine.flat_data
-        
-        if not classes_to_process:
-            print("Error: No classes found in RAG engine. Is the index built?")
-            return
+        """Exécute le processus complet de génération."""
+        classes_to_process = self._get_sampling_plan()
+        print(f"[*] Selected {len(classes_to_process)} classes for sampling.")
 
-        print(f"[*] Starting QA generation for {len(classes_to_process)} classes...")
-
-        for class_name, entry in classes_to_process.items():
-            definition = entry["metadata"].get("definition", "")
+        for class_name in classes_to_process:
+            # On récupère la définition depuis le moteur RAG (flat_data)
+            if class_name not in self.rag_engine.flat_data:
+                continue
+                
+            definition = self.rag_engine.flat_data[class_name]["metadata"].get("definition", "")
             if not definition:
                 continue
 
-            print(f"[*] Generating samples for: {class_name}...")
-            queries = self._query_ollama(class_name, definition)
+            print(f"[*] Generating queries for: {class_name}...")
+            new_samples = self._query_ollama(class_name, definition)
+            
+            for sample in new_samples:
+                # On s'assure que la classe attendue est bien celle qu'on traite
+                sample["expected_class"] = class_name 
+                self.all_samples.append(sample)
 
-            for q in queries:
-                self.qa_pairs.append({
-                    "query": q.strip(),
-                    "expected_class": class_name
-                })
+        if not self.all_samples:
+            print("[!] No samples generated.")
+            return
 
-        # Sauvegarde du résultat
-        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.qa_pairs, f, indent=2, ensure_ascii=False)
-
-        print(f"\n[+] Success! Generated {len(self.qa_pairs)} test cases.")
-        print(f"[+] Saved to: {OUTPUT_FILE}")
+        # Conversion en DataFrame et export Parquet
+        df = pd.DataFrame(self.all_samples)
+        df.to_parquet(OUTPUT_PAR_PATH, engine='pyarrow', index=False)
+        print(f"\n[+] Success! Saved {len(df)} samples to {OUTPUT_PAR_PATH}")
 
 if __name__ == "__main__":
-    # Initialisation du moteur avec les paramètres par défaut
+    # 1. Load Config
+    with open(CONFIG_PATH, "r") as f:
+        config_data = yaml.safe_load(f)
+
+    # 2. Init RAG and Data
     settings = Settings()
-    try:
-        engine = build_rag(settings)
-        generator = QAGenerator(engine)
-        generator.run()
-    except Exception as e:
-        print(f"Critical Error during execution: {e}")
-        sys.exit(1)
+    engine = build_rag(settings)
+    
+    with open(NESTED_DATA_PATH, "r", encoding="utf-8") as f:
+        nested_structure = json.load(f)
+
+    # 3. Run Generator
+    generator = StratifiedQAGenerator(engine, nested_structure, config_data)
+    generator.run()
