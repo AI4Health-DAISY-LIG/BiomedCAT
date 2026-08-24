@@ -15,5 +15,3 @@ Output/
 # Pipeline output (contains full transcriptions of the slide material above)
 output/
 .aider*
-
-scripts/

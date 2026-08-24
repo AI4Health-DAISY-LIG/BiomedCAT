@@ -1,8 +1,5 @@
 [
-  {
-    "query": "CACNA1C",
-    "expected_class": "gene"
-  },
+
   {
     "query": "insulin",
     "expected_class": "protein"
@@ -18,5 +15,9 @@
   {
     "query": "heart failure",
     "expected_class": "disease"
+  },  
+  {
+    "query": "CACNA1C",
+    "expected_class": "gene"
   }
 ]
