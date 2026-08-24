@@ -2,7 +2,7 @@ import json
 import yaml
 import ollama
 import pandas as pd
-import numpy.np
+import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Set
 from collections import defaultdict
@@ -61,7 +61,9 @@ class StratifiedQAGenerator:
         bins = depth_cfg.get("bins", [[1, 99]])
         
         # On prépare les classes par strate
-        strata: Dict[str, List[str]] = defaultdict(list)
+        strata: Dict[str, List[int]] = defaultdict(list) # Note: using list of class names
+        class_strata: Dict[str, List[str]] = defaultdict(list)
+
         for cls, meta in self.class_metadata.items():
             # Trouver le bin correspondant
             assigned_bin = "other"
@@ -72,17 +74,16 @@ class StratifiedQAGenerator:
             
             # On ajoute un suffixe pour la distinction feuille/non-feuille
             strat_key = f"depth_{assigned_bin}_leaf_{meta['is_leaf']}"
-            strata[strat_key].append(cls)
+            class_strata[strat_key].append(cls)
 
         # 2. Sélection des classes (Stratified Sampling)
-        # Pour chaque strate, on choisit un nombre de classes à échantillonner
-        # Note: Dans un vrai scénantion, on viserait le 'target' du YAML
-        for strat_name, classes in strata.items():
-            # On prend un échantillon arbitraire (ex: 2 classes par strate pour l'exemple)
-            # Pour la production, utilisez les valeurs 'min' ou 'target' du YAML
+        for strat_name, classes in class_strata.items():
+            if not classes:
+                continue
+            # On prend un échantillon arbitraire (ex: 3 classes par strate pour l'exemple)
             sample_size = min(len(classes), 3) 
             import random
-            selected = random.sample(classes, sample_sample_size := sample_size)
+            selected = random.sample(classes, sample_size)
             classes_to_sample.extend(selected)
 
         return classes_to_sample
@@ -146,8 +147,8 @@ class StratifiedQAGenerator:
 
         # Conversion en DataFrame et export Parquet
         df = pd.DataFrame(self.all_samples)
-        df.to_parquet(OUTPUT_PAR_PATH, engine='pyarrow', index=False)
-        print(f"\n[+] Success! Saved {len(df)} samples to {OUTPUT_PAR_PATH}")
+        df.to_parquet(OUTPUT_PARQUET, engine='pyarrow', index=False)
+        print(f"\n[+] Success! Saved {len(df)} samples to {OUTPUT_PARQUET}")
 
 if __name__ == "__main__":
     # 1. Load Config
