@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import List, Dict, Any, Optional
 from rank_bm25 import BM25Okapi
 import re
+import os
 
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
@@ -21,7 +22,7 @@ class BiomedRAG:
         self.config = config
         self.data_path = Path(config.internal_data_path) / "biolink_classes_flat.json"
         self.flat_data: Dict[str, Any] = {}
-        self.needs_reindexing = force_rebuild or not Path(config.chroma_db_path).exists()
+        self.needs_reindexing = force_rebuild or is_empty_dir(config.chroma_db_path)
 
         # Load ChromaDB
         # Bind embedding model                                                                                                                          
@@ -39,14 +40,14 @@ class BiomedRAG:
         else:                                                                                                                                                                                             
             print("[!] Biolink data file not found. Indexing.")                                                                                                                    
             self.flat_data = {}
-            self.needs_reindexing = True                                                                                                                                                                
+            self.needs_reindexing = True                                                                                                                                                             
                                                                                                                                                                                                           
         # Indexation                                                                                                                                                                        
         if self.needs_reindexing:                                                                                                                                                                         
             print("[*] Reconstruction de l'index ChromaDB en cours...")                                                                                                                                   
             self.build_indices()                                                                                                                                                                          
         else:                                                                                                                                                                                             
-            print("[*] ChromaDB index existing, charging existing DB.")
+            print("[*] ChromaDB doesn't need existing, charging existing DB.")
 
         # Corpus pour BM25 (mapping index -> class_name)
         self._bm25_corpus_map: List[str] = []
@@ -170,14 +171,21 @@ class BiomedRAG:
                 context_parts.append(part)
         
         return "\n".join(context_parts)
-    
+
+def is_empty_dir(path):
+    is_empty = True
+    for _ in os.scandir(path):
+        is_empty = False
+        break
+    return is_empty
+
 def build_rag(settings: str = Settings()):                                                                                                                                                                              
                                                                                                                                                                                                           
     # 1. Verify biolink yml update                                                                                                                          
     was_updated = run_smart_update(                                                                                                                                                                       
         source_url=settings.biolink_model_data,                                                                                                                                                         
         processor_func=biolink_yml_processor                                                                                                                                                              
-    )             # seems always True                                                                                                                                                                                        
+    )                                                                                                                                                                                      
                                                                                                                                                                                                           
     # 2. Initialize RAG                                                                                                                                  
     rag_engine = BiomedRAG(settings, force_rebuild=was_updated)                                                                                                                                           
@@ -187,3 +195,5 @@ def build_rag(settings: str = Settings()):
                                                                                                                                                                                                           
 if __name__ == "__main__":                                                                                                                                                                                
     rag_engine = build_rag()
+
+    print('bob')
