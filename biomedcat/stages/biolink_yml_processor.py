@@ -21,7 +21,7 @@ import os
 import re
 import warnings
 from collections import defaultdict
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple, Callable, Optional
 from biomedcat.config import settings
 import urllib.request
 from pathlib import Path
@@ -33,47 +33,146 @@ CACHE_FILE = Path("data/.biolink_cache.json")
 # ---------------------------------------------------------------------------
 # URL / path resolution
 # ---------------------------------------------------------------------------
-
+# --- Github -------------------------------
 _GITHUB_BLOB_RE = re.compile(
-    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)/"
-    r"blob/(?P<ref>[^/]+)/(?P<path>.+)$"
+    r"^https?://github\.com/"
+    r"(?P<owner>[^/]+)/"
+    r"(?P<repo>[^/]+)/"
+    r"blob/"
+    r"(?P<ref>[^/]+)/"
+    r"(?P<path>.+)$"
 )
 
-def get_remote_etag(url: str) -> str:                                                                                                                                                                     
-    """Récupère l'ETag (identifiant unique de version) via une requête HEAD."""                                                                                                                           
-    try:                                                                                                                                                                                                  
-        # On utilise la méthode HEAD pour ne pas télécharger le fichier, juste les headers                                                                                                                
-        req = urllib.request.Request(url, method='HEAD')                                                                                                                                                  
-        with urllib.request.urlopen(req, timeout=5) as response:                                                                                                                                          
-            return response.getheader('ETag', '')                                                                                                                                                         
-    except Exception as e:                                                                                                                                                                                
-        print(f"[!] Impossible de récupérer l'ETag : {e}")                                                                                                                                                
-        return ""
+def get_remote_blob_sha(url: str) -> str:
+    """
+    Retrieve the Git blob SHA for a file referenced by a GitHub blob URL.
 
-def run_smart_update(source_url: str, processor_func):                                                                                                                                                    
-    """Lance le processeur uniquement si l'ETag a changé."""                                                                                                                                              
-    remote_etag = get_remote_etag(source_url)                                                                                                                                                             
-    local_cache = {}                                                                                                                                                                                      
-                                                                                                                                                                                                          
-    if CACHE_FILE.exists():                                                                                                                                                                               
-        try:                                                                                                                                                                                              
-            with open(CACHE_FILE, "r") as f:                                                                                                                                                              
-                local_cache = json.load(f)                                                                                                                                                                
-        except json.JSONDecodeError:                                                                                                                                                                      
-            local_cache = {}                                                                                                                                                                              
-                                                                                                                                                                                                          
-    if remote_etag and local_cache.get("etag") == remote_etag:                                                                                                                                            
-        print("[*] Le modèle Biolink est déjà à jour (ETag identique).")                                                                                                                                  
-        return False # Pas de mise à jour effectuée                                                                                                                                                       
-                                                                                                                                                                                                          
-    print(f"[*] Changement détecté ou première exécution (Remote: {remote_etag}). Mise à jour...")                                                                                                        
-    processor_func(source=source_url)                                                                                                                                                                     
-                                                                                                                                                                                                          
-    # Sauvegarde du nouvel ETag                                                                                                                                                                           
-    with open(CACHE_FILE, "w") as f:                                                                                                                                                                      
-        json.dump({"etag": remote_etag}, f)                                                                                                                                                               
-    return True
+    The returned SHA identifies the file content, not an HTTP response.
+    """
+    api_url = github_blob_to_api_url(url)
 
+    request = urllib.request.Request(
+        api_url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "biolink-model-updater",
+        },
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.load(response)
+
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(
+            f"GitHub API request failed with HTTP {error.code}: "
+            f"{error.reason}"
+        ) from error
+
+    except urllib.error.URLError as error:
+        raise RuntimeError(
+            f"Could not reach GitHub API: {error.reason}"
+        ) from error
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Unexpected GitHub API response.")
+
+    blob_sha = payload.get("sha")
+
+    if not blob_sha:
+        raise RuntimeError(
+            "GitHub API response does not contain a file SHA. "
+            "The URL may refer to a directory, or the file may not exist."
+        )
+
+    return str(blob_sha)
+
+def github_blob_to_api_url(url: str) -> str:
+    """
+    Convert a GitHub web/blob URL to a GitHub Contents API URL.
+
+    Example:
+        https://github.com/biolink/biolink-model/blob/master/
+        biolink-model.yaml
+
+    becomes:
+        https://api.github.com/repos/biolink/biolink-model/contents/
+        biolink-model.yaml?ref=master
+    """
+    match = _GITHUB_BLOB_RE.match(url)
+
+    if not match:
+        raise ValueError(
+            "Expected a GitHub blob URL of the form: "
+            "https://github.com/OWNER/REPO/blob/REF/PATH"
+        )
+
+    owner = match.group("owner")
+    repo = match.group("repo")
+    ref = match.group("ref")
+    path = match.group("path")
+
+    encoded_path = urllib.parse.quote(path, safe="/")
+    encoded_ref = urllib.parse.quote(ref, safe="")
+
+    return (
+        f"https://api.github.com/repos/{owner}/{repo}/contents/"
+        f"{encoded_path}?ref={encoded_ref}"
+    )
+
+def load_cache(cache_file: Path) -> Dict[str, Any]:
+    """
+    Load the update cache. Invalid or missing caches are treated as empty.
+    """
+    if not cache_file.exists():
+        return {}
+
+    try:
+        with cache_file.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+
+        return payload if isinstance(payload, dict) else {}
+
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_cache(
+    cache_file: Path,
+    source_url: str,
+    remote_sha: str,
+) -> None:
+    """
+    Save the source URL and Git blob SHA atomically.
+    """
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "source_url": source_url,
+        "blob_sha": remote_sha,
+    }
+
+    temporary_file = cache_file.with_suffix(
+        cache_file.suffix + ".tmp"
+    )
+
+    with temporary_file.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+    temporary_file.replace(cache_file)
+
+# def get_remote_etag(url: str) -> str:                                                                                                                                                                     
+#     """Récupère l'ETag (identifiant unique de version) via une requête HEAD."""                                                                                                                           
+#     try:                                                                                                                                                                                                  
+#         # On utilise la méthode HEAD pour ne pas télécharger le fichier, juste les headers                                                                                                                
+#         req = urllib.request.Request(url, method='HEAD')                                                                                                                                                  
+#         with urllib.request.urlopen(req, timeout=5) as response:                                                                                                                                          
+#             return response.getheader('ETag', '')                                                                                                                                                         
+#     except Exception as e:                                                                                                                                                                                
+#         print(f"[!] Impossible de récupérer l'ETag : {e}")                                                                                                                                                
+#         return ""
 
 def _resolve_source(source: str) -> str:
     """Convert a GitHub ``blob`` URL to a ``raw.githubusercontent.com`` URL."""
@@ -85,7 +184,7 @@ def _resolve_source(source: str) -> str:
         )
     return source
 
-
+# --- Files -------------------------------
 def _load_yaml(source: str) -> Dict[str, Any]:
     """Load YAML from a local path, raw URL, or GitHub blob URL."""
     if os.path.exists(source):
@@ -336,6 +435,53 @@ def biolink_yml_processor(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def run_smart_update(
+    source_url: str,
+    processor_func: Callable[..., Any],
+    cache_file: Optional[Path] = None,
+    ) -> bool:
+
+    """
+    Run the processor only if the GitHub file content changed.
+
+    Returns:
+        True  if the processor ran.
+        False if the cached Git blob SHA is unchanged.
+    """
+    cache_file = cache_file or CACHE_FILE
+
+    remote_sha = get_remote_blob_sha(source_url)
+    local_cache = load_cache(cache_file)
+
+    cached_sha = local_cache.get("blob_sha")
+    cached_source_url = local_cache.get("source_url")
+
+    if (cached_sha == remote_sha and cached_source_url == source_url):
+        print("[*] Biolink Model standards is already up to date. ") #(Git blob SHA identique)."
+        return False
+
+    if cached_sha is None:
+        reason = "première exécution"
+    elif cached_source_url != source_url:
+        reason = "source modifiée"
+    else:
+        reason = "contenu modifié"
+
+    print(
+        f"[*] Mise à jour nécessaire ({reason}). "
+        f"Remote blob SHA: {remote_sha}"
+    )
+
+    processor_func(source=source_url)
+
+    save_cache(
+        cache_file=cache_file,
+        source_url=source_url,
+        remote_sha=remote_sha,
+    )
+
+    return True
+
 def _is_entity_class(
     class_name: str,
     all_classes: Dict[str, Any],
