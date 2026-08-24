@@ -2,7 +2,7 @@ import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from biomedcat.rag_engine import BiomedRAG
+from biomedcat.stages.rag_engine import BiomedRAG
 from biomedcat.config import Settings
 import chromadb
 
