@@ -3,6 +3,7 @@ import requests
 import sys
 from pathlib import Path
 from typing import List, Dict, Any
+import ollama
 
 # Importation du moteur RAG pour accéder aux données réelles de l'index
 try:
@@ -14,9 +15,9 @@ except ImportError as e:
 
 # Configuration
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "gemma4:e4b-it-quat"
+MODEL_NAME = "gemma4:e4b-it-qat"
 SAMPLES_PER_CLASS = 5  # Nombre de requêtes à générer par classe pour la significativité statistique
-OUTPUT_FILE = Path("tests/qa_data.json")
+OUTPUT_FILE = Path("data/qa_data.json")
 
 class QAGenerator:
     def __init__(self, rag_engine):
@@ -28,25 +29,60 @@ class QAGenerator:
         Interroge Ollama pour générer des termes biomédicaux basés sur la définition.
         Utilise le mode JSON d'Ollama pour une extraction robuste.
         """
+
+        qa_rag_schema = {                                                                                                                                                                          
+            "type": "array",                                                                                                                                                                       
+            "items": {                                                                                                                                                                             
+                "type": "object",                                                                                                                                                                  
+                "properties": {                                                                                                                                                                    
+                    "query": {"type": "string"},                                                                                                                                                   
+                    "expected_class": {"type": "string"}                                                                                                                                           
+                },                                                                                                                                                                                 
+                "required": ["query", "expected_class"]                                                                                                                                            
+            }                                                                                                                                                                                      
+        } 
+        
         prompt = (
             f"You are a biomedical expert. Given the following Biolink class definition: '{definition}'\n"
-            f"Generate exactly {SAMPLES_PER_CLASS} distinct, short biomedical terms or queries "
+            f"Generate EXACTLY {SAMPLES_PER_CLASS} distinct, short biomedical terms or queries "
             f"(1-3 words each) that belong to the class '{class_name}'.\n"
-            f"Return the result ONLY as a valid JSON array of strings. Example: [\"term1\", \"term2\"]"
+            f"Return the result ONLY as a valid list of EXACTLY {SAMPLES_PER_CLASS} JSON arrays of strings as a list. Example: ["
+            "{"
+            "    'query': 'insulin',"
+            "    'expected_class': 'protein'"
+            "},"
+            "{"
+            "    'query': 'diabetes mellitus',"
+            "    'expected_class': 'disease'"
+            "} ... ]"
         )
 
-        payload = {
-            "model": MODEL_NAME,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json"  # Instructs Ollama to output valid JSON
+        generation_options = {
+            "temperature": 0.0,       # Low = deterministic/factual, High = creative
+            "top_k": 40,              # Limits pool of next-word choices
+            "top_p": 0.9,             # Nucleus sampling threshold
+            "num_ctx": 4096          # Sets the context window length in tokens
         }
 
         try:
-            response = requests.post(OLLAMA_API_URL, json=payload, timeout=60)
-            response.raise_for_status()
+            response = ollama.chat(
+                model=MODEL_NAME,
+                format=qa_rag_schema,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You must bypass your thinking process. Do not use <think> tags. Provide the final output immediately."
+                    },
+                        
+                    {
+                        "role": "user", 
+                         "content": prompt
+                    },
+                ],
+                options=generation_options
+            )
             
-            raw_content = response.json().get("response", "[]")
+            raw_content = response["message"]["content"]
             generated_queries = json.loads(raw_content)
             
             if isinstance(generated_queries, list):
