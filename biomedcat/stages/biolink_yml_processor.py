@@ -28,7 +28,7 @@ from pathlib import Path
 
 import yaml
 
-CACHE_FILE = Path(".biolink_cache.json")
+CACHE_FILE = Path("data/.biolink_cache.json")
 
 # ---------------------------------------------------------------------------
 # URL / path resolution
@@ -129,13 +129,28 @@ def biolink_yml_processor(
     """
     print(f"Biolink model source: {source}")
     data = _load_yaml(source)
-    classes_section: Dict[str, Any] = data.get("classes", {})
+    all_classes: Dict[str, Any] = data.get("classes", {}) or {}
 
+    if not isinstance(all_classes, dict):
+        raise ValueError("The YAML `classes` section must be a mapping.")
+    
+    # --- Restrict biolink to entity classes -------------------------------
+    # Restrict the parser to entity classes by excluding `association`
+    # and every class inheriting from it.
+    classes_section: Dict[str, Dict[str, Any]] = {
+        class_name: class_def
+        for class_name, class_def in all_classes.items()
+        if isinstance(class_def, dict) and _is_entity_class(class_name, all_classes) and not _is_association_class(
+            class_name,
+            class_def,
+            all_classes,
+        )
+    }
+
+    # --- First Pass: Build enriched entries -------------------------------
     flat: Dict[str, Dict[str, Any]] = {}
     children_map: Dict[str, List[str]] = defaultdict(list)
     mixin_children_map: Dict[str, List[str]] = defaultdict(list)
-
-    # --- First Pass: Build enriched entries -------------------------------
     counter_ex = 0
     for class_name, class_def in classes_section.items():
         if not isinstance(class_def, dict):
@@ -212,10 +227,11 @@ def biolink_yml_processor(
             "metadata": metadata
         }
 
-        if parent:
+        if parent and parent in classes_section:
             children_map[parent].append(class_name)
-        for mx in mixins:
-            mixin_children_map[mx].append(class_name)
+        for mixin in mixins:
+            if mixin in classes_section:
+                mixin_children_map[mixin].append(class_name)
 
     # Check for orphan classes
     for class_name, entry in flat.items():
@@ -271,7 +287,7 @@ def biolink_yml_processor(
         meta["neighbors"] = sorted(list(neighbors))
 
     # --- Build Nested Tree -----------------------------------------------
-    roots = [name for name, e in flat.items() if e["metadata"]["parent"] is None]
+    roots = [class_name for class_name, entry in flat.items() if not entry["metadata"]["parent"] or entry["metadata"]["parent"] not in flat]
     orphans = [name for name, e in flat.items() if e["metadata"]["parent"] and e["metadata"]["parent"] not in classes_section]
     roots = sorted(set(roots + orphans))
 
@@ -320,6 +336,58 @@ def biolink_yml_processor(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _is_entity_class(
+    class_name: str,
+    all_classes: Dict[str, Any],
+) -> bool:
+    visited: Set[str] = set()
+    current = class_name
+
+    while current and current not in visited:
+        visited.add(current)
+
+        if current == "entity":
+            return True
+
+        current_def = all_classes.get(current, {})
+        if not isinstance(current_def, dict):
+            return False
+
+        current = current_def.get("is_a")
+
+    return False
+
+def _is_association_class(
+    class_name: str,
+    class_def: Dict[str, Any],
+    all_classes: Dict[str, Any],
+) -> bool:
+    """
+    Return True if a Biolink class is an association class or inherits from one.
+
+    Association classes are identified recursively through `is_a`.
+    This excludes:
+      - association
+      - all descendants of association
+      - classes explicitly marked as association classes by `defining_slots`
+        or association-related metadata
+    """
+    visited: Set[str] = set()
+    current = class_name
+
+    while current and current not in visited:
+        visited.add(current)
+
+        if current == "association":
+            return True
+
+        current_def = all_classes.get(current, {})
+        if not isinstance(current_def, dict):
+            return False
+
+        current = current_def.get("is_a")
+
+    return False
 
 def _collect_descendants(node: str, children_map: Dict[str, List[str]]) -> List[str]:
     """Return all transitive descendants of node."""
