@@ -1,0 +1,22 @@
+[
+  {
+    "query": "CACNA1C",
+    "expected_class": "gene"
+  },
+  {
+    "query": "insulin",
+    "expected_class": "protein"
+  },
+  {
+    "query": "diabetes mellitus",
+    "expected_class": "disease"
+  },
+  {
+    "query": "glucose",
+    "expected_class": "chemical"
+  },
+  {
+    "query": "heart failure",
+    "expected_class": "disease"
+  }
+]
