@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from rank_bm25 import BM25Okapi
 import re
 import os
+import spacy
 
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
@@ -24,19 +25,27 @@ class BiomedRAG:
         self.flat_data: Dict[str, Any] = {}
         self.needs_reindexing = force_rebuild or is_empty_dir(config.chroma_db_path)
 
-        # Load ChromaDB
+        # Load Models
         # Bind embedding model                                                                                                                          
         print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(                                                                                                                     
             model_name=self.config.RAG_embedding_model                                                                                                                                                    
         )
+        print("[*] Loading scispaCy model for tokenization...")                                                                                                                            
+        try:                                                                                                                                                                               
+            self.nlp = spacy.load("en_core_sci_sm")                                                                                                                                        
+        except OSError:                                                                                                                                                                    
+            print("[!] scispaCy model not found. Falling back to basic tokenizer.")                                                                                                        
+            self.nlp = None
+
         # Indexeurs
         self.chroma_client = chromadb.PersistentClient(path=config.chroma_db_path)
         self.collection = self.chroma_client.get_or_create_collection(name="biomedcat_dense",embedding_function=self.embedding_fn)
 
         # Load Data   
         if self.data_path.exists():                                                                                                                                                                       
-            self._load_data()                                                                                                                                                                             
+            self._load_data()
+            self._setup_bm25()                                                                                                                                                                             
         else:                                                                                                                                                                                             
             print("[!] Biolink data file not found. Indexing.")                                                                                                                    
             self.flat_data = {}
@@ -44,16 +53,17 @@ class BiomedRAG:
                                                                                                                                                                                                           
         # Indexation                                                                                                                                                                        
         if self.needs_reindexing:                                                                                                                                                                         
-            print("[*] Reconstruction de l'index ChromaDB en cours...")                                                                                                                                   
-            self.build_indices()                                                                                                                                                                          
+            print("[*] Reconstruction de l'index ChromaDB en cours...")
+            self._build_chroma_index()
+            self._setup_bm25()                                                                                                                               
+            # self.build_indices()                                                                                                                                                                          
         else:                                                                                                                                                                                             
             print("[*] ChromaDB doesn't need existing, charging existing DB.")
+            if not hasattr(self, 'bm25') or self.bm25 is None:                                                                                                                                 
+                self._setup_bm25()
 
-        # Corpus pour BM25 (mapping index -> class_name)
-        self._bm25_corpus_map: List[str] = []
-        self._bm25_tokenized_corpus: List[List[str]] = []
 
-        
+
         # self._load_data()
 
     def _load_data(self) -> None:
@@ -61,11 +71,65 @@ class BiomedRAG:
         with open(self.data_path, "r", encoding="utf-8") as f:
             self.flat_data = json.load(f)
 
-    def _tokenize(self, text: str) -> List[str]:
-        """Tokenisation simple pour l'index Sparse (BM25)."""
-        return re.findall(r'\w+', text.lower())
+    def _tokenize(self, text: str) -> List[str]:                                                                                                                                               
+        """                                                                                                                                                                                    
+        Tokenisation experte :                                                                                                                                                                 
+        1. Utilise la structure grammaticale de scispaCy.                                                                                                                                      
+        2. Ne garde que les entités sémantiques (Noms, Noms propres, Adjectifs).                                                                                                               
+        3. Supprime les doublons et le bruit (stop words, ponctuation).                                                                                                                        
+        """                                                                                                                                                                                    
+        if not text:                                                                                                                                                                           
+            return []                                                                                                                                                                          
+                                                                                                                                                                                            
+        # Fallback si le modèle n'est pas chargé                                                                                                                                               
+        if not self.nlp:                                                                                                                                                                       
+            tokens = re.findall(r'\w+', text.lower())                                                                                                                                          
+            return list(set(tokens)) # Supprime les doublons                                                                                                                                   
+                                                                                                                                                                                            
+        # Traitement avec scispaCy                                                                                                                                                             
+        doc = self.nlp(text)                                                                                                                                                                   
+                                                                                                                                                                                            
+        # Utilisation d'un set pour garantir l'unicité (suppression des doublons)                                                                                                              
+        important_tokens = set()                                                                                                                                                               
+                                                                                                                                                                                            
+        for token in doc:                                                                                                                                                                      
+            # On ne garde que les tokens qui sont :                                                                                                                                            
+            # - Pas un stop word, pas de la ponctuation, pas un espace                                                                                                                         
+            # - Un Nom (NOUN), un Nom Propre (PROPN) ou un Adjectif (ADJ)                                                                                                                      
+            if (not token.is_stop and                                                                                                                                                          
+                not token.is_punct and                                                                                                                                                         
+                not token.is_space and                                                                                                                                                         
+                token.pos_ in {"NOUN", "PROPN", "ADJ"}):                                                                                                                                       
+                                                                                                                                                                                            
+                important_tokens.add(token.text.lower())                                                                                                                                       
+                                                                                                                                                                                            
+        return list(important_tokens)
 
-    def build_indices(self) -> None:
+    def _setup_bm25(self) -> None:                                                                                                                                                             
+        """Initialise l'index Sparse (BM25) à partir des données chargées."""                                                                                                                  
+        if not self.flat_data:                                                                                                                                                                 
+            return                                                                                                                                                                             
+                                                                                                                                                                                            
+        print("[*] Initializing BM25 index...")                                                                                                                                                
+        bm25_corpus_tokens = []                                                                                                                                                                
+        self._bm25_corpus_map = []                                                                                                                                                             
+                                                                                                                                                                                            
+        for class_name, entry in self.flat_data.items():                                                                                                                                       
+            meta = entry["metadata"]                                                                                                                                                           
+            definition = meta.get("definition", "")                                                                                                                                            
+            examples_text = " ".join(meta.get("examples", []))                                                                                                                                 
+            combined_text = f"{definition} {examples_text}"                                                                                                                                    
+                                                                                                                                                                                            
+            tokens = self._tokenize(combined_text)                                                                                                                                             
+            bm25_corpus_tokens.append(tokens)                                                                                                                                                  
+            self._bm25_corpus_map.append(class_name)                                                                                                                                           
+                                                                                                                                                                                            
+        if bm25_corpus_tokens:                                                                                                                                                                 
+            self.bm25 = BM25Okapi(bm25_corpus_tokens)                                                                                                                                          
+        else:                                                                                                                                                                                  
+            self.bm25 = None
+
+    def _build_chroma_index(self) -> None:
         """Construit les index ChromaDB (Dense) et BM21/BM25 (Sparse)."""
         print(f"[*] Indexation starts for {len(self.flat_data)} classes...")
         
@@ -73,9 +137,6 @@ class BiomedRAG:
         dense_documents = []
         dense_metadatas = []
         
-        bm25_corpus_tokens = []
-        self._bm25_corpus_map = []
-
         for class_name, entry in self.flat_data.items():
             # 1. Préparation pour l'index Dense (ChromaDB)
             # On utilise le doc_text qui contient déjà la définition + les exemples
@@ -89,15 +150,6 @@ class BiomedRAG:
             meta = entry["metadata"]
             definition = meta.get("definition", "")
             examples_text = " ".join(meta.get("examples", []))
-            combined_text = f"{definition} {examples_text}"
-            
-            tokens = self._tokenize(combined_text)
-            bm25_corpus_tokens.append(tokens)
-
-        # Indexing BM25
-        if bm25_corpus_tokens:
-            self.bm25 = BM25Okapi(bm25_corpus_tokens)
-            self._bm25_corpus_map = list(self.flat_data.keys()) # Assurer la correspondance
 
         # Injection dans ChromaDB
         if dense_ids:
@@ -153,7 +205,7 @@ class BiomedRAG:
 
     def get_context(self, class_names: List[str]) -> str:
         """
-        Génère le bloc de texte contextuel pour l'Agent (Phase 3).
+        Génère le bloc de texte contextuel pour un agent.
         Transforme les noms de classes en descriptions textuelles complètes.
         """
         if not class_names:
@@ -192,8 +244,8 @@ def build_rag(settings: str = Settings()):
                                                                                                                                                                                                           
     print("[+] RAG ready.")
     return rag_engine                                                                                                                                                                     
-                                                                                                                                                                                                          
+
 if __name__ == "__main__":                                                                                                                                                                                
     rag_engine = build_rag()
-
-    print('bob')
+    results = rag_engine.search("CACNA1C gene")
+    context = rag_engine.get_context(["gene"])
