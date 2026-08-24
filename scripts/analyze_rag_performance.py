@@ -7,7 +7,7 @@ from biomedcat.stages.rag_engine import build_rag
 from biomedcat.config import Settings
 
 # Configuration des chemins
-QA_DATA_PATH = Path("tests/qa_data.json")
+QA_DATA_PATH = Path("tests/qa_</strong>data.json")
 NESTED_DATA_PATH = Path("data/biolink_classes_nested.json")
 K_RANGE = [1, 5, 10, 20, 50, 100]
 
@@ -16,10 +16,10 @@ class RAGAnalyzer:
         self.rag_engine = rag_engine
         self.nested_data = nested_data
         # On prépare une map inverse pour retrouver les parents rapidement
-        self.parent_map = self._build_parent_map(nested__data)
+        self.parent_map = self._build_parent_map(self.nested_data)
 
     def _build_parent_map(self, nested: Dict[str, Any]) -> Dict[str, str]:
-        """Construit une table de correspondance : enfant -> parent."""
+        """Builds a mapping from child class to its parent class."""
         parents = {}
         def traverse(node_name, parent_name=None):
             if parent_name:
@@ -29,18 +29,27 @@ class RAGAnalyzer:
                 for child_name in children:
                     traverse(child_name, node_name)
         
-        # On commence la traversée par les racines (classes sans parents dans le JSON)
+        # Start traversal from roots (classes without a defined parent in the JSON)
         roots = [name for name, data in nested.items() if not data.get("parent")]
         for root in roots:
-            traverse(root)
+            traverse(root, None)
         return parents
 
     def load_qa_data(self) -> List[Dict[str, str]]:
-        with open(QA_DATA_PATH, "format="utf-8") as f:
+        """Loads the QA test cases from the JSON file."""
+        if not QA_DATA_PATH.exists():
+            print(f"[!] Warning: {QA_DATA_PATH} not found.")
+            return []
+        with open(QA_DATA_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
 
     def analyze(self):
+        """Performs the performance analysis across different top_k values."""
         test_cases = self.load_qa_data()
+        if not test_cases:
+            print("[!] No test cases to analyze.")
+            return
+
         all_results = {}
 
         print(f"[*] Starting analysis across K={K_RANGE}...")
@@ -54,7 +63,7 @@ class RAGAnalyzer:
                 query = case["query"]
                 expected = case["expected_class"]
                 
-                # On incrémente le total pour cette classe
+                # Increment total for this class
                 metrics_per_class[expected]["total"] += 1
                 
                 results = self.rag_engine.search(query, top_k=k)
@@ -62,10 +71,10 @@ class RAGAnalyzer:
                 if expected in results:
                     metrics_per_class[expected]["hits"] += 1
                 else:
-                    # On enregistre la défaillance pour l'analyse de proximité
+                    # Record failure for proximity analysis
                     failures.append(expected)
 
-            # Calcul du recall par classe pour ce K
+            # Calculate recall per class for this K
             recall_at_k = {}
             for cls, counts in metrics_per_class.items():
                 recall_at_k[cls] = counts["hits"] / counts["total"] if counts["total"] > 0 else 0
@@ -78,11 +87,12 @@ class RAGAnalyzer:
         self._print_report(all_results)
 
     def _print_report(self, all_results: Dict[int, Any]):
+        """Prints the final performance and failure mode report."""
         print("\n" + "="*50)
-        print("       RAG PERFORMANCE & HIERARCHY REPORT")
-        print("="*5_0)
+        print("       RAG PERFORMANCE & HHIERARCHY REPORT")
+        print("="*50)
 
-        # 1. Trouver le K optimal (celui qui maximise la moyenne du recall global)
+        # 1. Find optimal K (the one that maximizes average global recall)
         best_k = 0
         max_avg_recall = -1.0
 
@@ -97,21 +107,21 @@ class RAGAnalyzer:
 
         print(f"\n[!] OPTIMAL TOP_K IDENTIFIED: {best_k}")
 
-        # 2. Analyse de la proximité des échecs (Failure Mode Analysis)
+        # 2. Failure Mode Analysis (Proximity to other terms)
         print("\n" + "-"*50)
         print("FAILURE MODE ANALYSIS (Hierarchy Proximity)")
-        print("-"*50)
+        print("-" * 50)
 
-        # On prend les échecs du meilleur K pour voir si une branche est touchée
+        # We analyze failures at the best K found
         final_failures = all_results[best_k]["failures"]
         
-        if not final_abilities:
+        if not final_failures:
             print("No failures detected at optimal K.")
             return
 
         failure_clusters = defaultdict(int)
         for f_class in final_failures:
-            # On remonte l'arbre pour voir si l'échec est lié à un ancêtre commun
+            # Trace back up the tree to see which ancestors are impacted by these failures
             path = []
             curr = f_class
             while curr in self.parent_map:
@@ -121,7 +131,7 @@ class RAGAnalyzer:
             for ancestor in path:
                 failure_clusters[ancestor] += 1
 
-        # Trier les clusters par importance (nombre d'échecs impactés)
+        # Sort clusters by impact (number of impacted descendants)
         sorted_clusters = sorted(failure_clusters.items(), key=lambda x: x[1], reverse=True)
 
         print("Detected failure clusters in hierarchy (Class -> Number of impacted descendants):")
@@ -132,12 +142,12 @@ class RAGAnalyzer:
         print("\n[!] Analysis Complete.")
 
 if __name__ == "__main__":
-    # Initialisation du moteur RAG
+    # Initialization of the RAG engine
     settings = Settings()
     try:
         engine = build_rag(settings)
         
-        # Chargement de la structure hiérarchique
+        # Load the hierarchical structure
         with open(NESTED_DATA_PATH, "r", encoding="utf-8") as f:
             nested_structure = json.load(f)
 
