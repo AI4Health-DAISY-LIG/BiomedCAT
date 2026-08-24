@@ -42,42 +42,31 @@ def dummy_biolink_data(tmp_path):
 
 @pytest.fixture
 def rag_engine(mock_settings, dummy_biolink_data):                                                                         
-    # 1. Instantiate DB                                       
+    # 1. Instantiate DB                                                                      
     client = chromadb.EphemeralClient()                                                                                    
     collection_name = "test_collection"                                                                                    
                                                                                                                            
-    # 2. Verify if collection exists                                                                      
-    try:                                                                                                                   
-        # On tente de récupérer la collection existante                                                                    
+    # 2. Verify if collection exists                                                                                                     
+    try:                                                                                                                                  
+        # On tente de récupérer la collection existante                                                                                                   
         collection = client.get_collection(name=collection_name)                                                           
         print(f"[!] Collection '{collection_name}' déjà présente, réutilisation.")                                         
-    except Exception:                                                                                                      
-        # Si elle n'existe pas, on la crée                                                                                 
+    except Exception:                                                                                                                                     
+        # Si elle n'existe pas, on la crée                                                                                                                
         print(  f"[*] Création de la collection '{collection_name}'.")                                                     
         collection = client.create_collection(name=collection_name)                                                        
-                                                                                                                           
+                                                                                                                                                          
     with patch("chromadb.Client", return_value=client):                                                                    
         engine = BiomedRAG(mock_settings)                                                                                  
         engine.collection = collection                                                                                     
                                                                                                                                                              
         if collection.count() == 0:                                                                                        
-            engine.build_indices()                                                                                         
-        else:                                                                                                              
+            # Fixed: renamed from build_indices to _build_chroma_index
+            engine._build_chroma_index()                                                                                         
+        else:                                                                                                                                             
             print("[!] Index déjà chargé, saut de build_indices.")                                                         
-                                                                                                                           
+                                                                                                                                                          
         yield engine, collection
-
-# @pytest.fixture
-# def rag_engine(mock_settings,dummy_biolink_data):
-#     client = chromadb.EphemeralClient() 
-#     collection = client.create_collection(name="test_collection")
-    
-#     with patch("chromadb.Client", return_value=client):
-#         engine = BiomedRAG(mock_settings)
-#         engine.collection = collection # Ensure it uses our in-memory one
-#         engine.build_indices() # file read in
-
-#         yield engine, collection
 
 def test_search_hybrid_logic(rag_engine):
     """Test documents ranking."""
@@ -109,15 +98,6 @@ def test_get_context_formatting(rag_engine):
     assert "Examples: [BRCA1, TP53]" in context
     assert "Class: Disease" in context
     assert "Examples: [Cancer, Diabetes]" in context
-
-# def test_search_empty_results(rag_engine):
-#     """Verify that no entity is retrieved."""
-#     engine, mock_collection = rag_engine
-    
-#     results = engine.search("non-existent-term")
-#     assert isinstance(results, list)
-
-#     assert len(results) == 0
 
 if __name__ == "__main__":
     pytest.main([__file__])
