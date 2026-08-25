@@ -55,9 +55,8 @@ class NERPipeline:
     #     """Release GPU resources."""
     #     free_gpu()
 
-    # --- Deterministic preprocessing -------------------------------------------------
 
-    def preprocess(self, text: str) -> list[str]:
+    def preprocess(self, text: str) -> list[str]: # Deterministic preprocessing
         """Clean OCR text and split it into sentences. Fully rule-based, hence reproducible."""
         if not text.strip():                        # empty or image-only slide
             return []
@@ -121,6 +120,25 @@ class NERPipeline:
         """Assign the single most relevant type to a term, or None (ZeroTuneBio Module 2)."""
         raw = self._generate(
             prompts.classification_messages(term, sentence), 
+            model_id=self.classification_model_id,
+            temperature=0,
+            max_new_tokens=512
+        )
+
+        # Read the 'TYPE: X' verdict (the last one). Tolerate case and space/hyphen variants
+        # ('Cell Type' -> 'CELL_TYPE') so a valid typing is never misread as NONE and dropped.
+        verdicts = re.findall(r"TYPE:\s*([A-Za-z][A-Za-z _-]*)", raw)
+        if not verdicts:
+            logger.warning("  classify %r: no TYPE verdict parsed", term)
+            return None
+
+        verdict = re.sub(r"[ -]+", "_", verdicts[-1].strip().upper())
+        return verdict if verdict in ENTITY_TYPES else None
+
+    def _classify_type_biolink(self, term: str, sentence: str) -> str | None:
+        """Assign the single most relevant type to a term, or None (ZeroTuneBio Module 2)."""
+        raw = self._generate(
+            prompts.classification_messages_biolink(term, sentence), 
             model_id=self.classification_model_id,
             temperature=0,
             max_new_tokens=512
@@ -213,7 +231,7 @@ class NERPipeline:
         # Module 2: classify each grounded term into a single type (or None).
         typed = []
         for term in candidates:
-            etype = self._classify_type(term, sentence)
+            etype = self._classify_type_biolink(term, sentence)
             logger.info("  M2 %r -> %s", term, etype)
             if etype:
                 typed.append(Entity(text=term, type=etype, segment=sentence))
