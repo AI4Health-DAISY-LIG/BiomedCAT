@@ -1,7 +1,7 @@
 import re
 import json
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from biomedcat.runtime import generate
 from biomedcat.types import Entity, ENTITY_TYPES
@@ -27,35 +27,72 @@ class NERAgentPipeline:
         self.classification_model_id = classification_model_id
         self.sanitization_model_id = sanitization_model_id
         self.max_agent_steps = 5  # Limite pour éviter les boucles infinies
+        self.MAX_INPUT_LENGTH = 5000
 
     # ---------------------------------------------------------------------------
-    # SECURITY (Sentinel)
+    # SECURITY (Sentinel & Sanitizer)
     # ---------------------------------------------------------------------------
 
-    def _is_input_safe(self, term: str, sentence: str) -> bool:
+    def _is_input_safe(self, term: str, sentence: str) -> Tuple[bool, str, str]:
         """
-        Utilise LlamaGuard pour vérifier si l'entrée contient des tentatives 
-        d'injection de prompt ou des instructions malveillantes.
-        LlamaGuard analyse directement le contenu du message utilisateur.
+        Phase 1 (Sanitizer): Vérification structurelle et nettoyage rapide.
+        Phase 2 (Sentinel): Analyse sémantique via LlamaGuard.
+        
+        Retourne: (is_safe, sanitized_term, sanitized_sentence)
         """
-        # On ne transmet que le contenu brut à analyser, sans instruction métier.
-        # LlamaGuard est entraîné pour classifier ce type de structure.
-        content = f"Sentence: {sentence}\nTerm: {term}"
+        # --- PHASE 1: SANITIZER (Local Regex/String) ---
+        
+        # 1. Validation de la taille (DoS Protection)
+        if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH:
+            logger.warning("[SECURITY] Input too large. Rejecting to prevent DoS.")
+            return False, "", ""
+
+        # 2. Nettoyage des caractères de contrôle uniquement (Preserve scientific symbols)
+        # On supprime les caractères non-imprimables (0x00-0x1F sauf \n, \r, \t et 0x7F)
+        def clean_control_chars(text: str) -> str:
+            return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+        term_clean = clean_control_chars(term).strip()
+        sentence_clean = clean_control_chars(sentence).strip()
+
+        # 3. Protection de la structure (Structural Integrity)
+        # Interdiction d'injecter les délimiteurs du prompt ReAct
+        forbidden_keywords = ["ACTION:", "FINAL_VERDICT:", "OBSERVATION:"]
+        for kw in forbidden_keywords:
+            if kw in term_clean.upper() or kw in sentence_clean.upper():
+                logger.warning(f"[SECURITY] Forbidden keyword '{kw}' detected in input!")
+                return False, "", ""
+
+        # 4. Détection de patterns d'injection (Pattern Matching)
+        injection_patterns = [
+            r"ignore all instructions",
+            r"system override",
+            r"forget your tools",
+            r"new instructions",
+            r"disregard previous"
+        ]
+        for pattern in injection_patterns:
+            if re.search(pattern, term_clean + " " + sentence_clean, re.IGNORECASE):
+                logger.warning(f"[SECURITY] Injection pattern '{pattern}' detected!")
+                return False, "", ""
+
+        # --- PHASE 2: SENTINEL (LlamaGuard) ---
+        
+        content = f"Sentence: {sentence_clean}\nTerm: {term_clean}"
         messages = [{"role": "user", "content": content}]
         
         try:
-            # Utilisation du modèle de sanitization défini dans la config
             response = generate(self.sanitization_model_id, messages, 50, 0).lower()
             
             if "unsafe" in response:
-                logger.warning(f"[SECURITY ALERT] Unsafe input detected! Term: '{term}'")
-                return False
+                logger.warning(f"[SECURITY ALERT] LlamaGuard flagged input as UNSAFE! Term: '{term_clean}'")
+                return False, "", ""
             
-            return True
+            return True, term_clean, sentence_clean
         except Exception as e:
-            # En cas d'erreur du modèle de sécurité, on adop_te une approche "Fail-Closed" (on refuse)
+            # En cas d'erreur du modèle de sécurité, on adopte une approche "Fail-Closed" (on refuse)
             logger.error(f"[SECURITY ERROR] Error during sanitization: {e}")
-            return False
+            return False, "", ""
 
     # ---------------------------------------------------------------------------
     # TOOLS (Outils exposés à l'agent)
@@ -77,7 +114,7 @@ class NERAgentPipeline:
     def tool_semantic_context_search(self, query: str) -> str:
         """Interroge le moteur Hybrid RAG (Dense + Sparse)."""
         logger.info(f"[Agent Tool] Semantic search: {query}")
-        results = self.rag_engine.search(query, top_k=10) #### TO BE REVIEWED BASED ON TESTING
+        results = self.rag_engine.search(query, top_k=10)
         if not results:
             return "No relevant biological classes found."
         
@@ -131,16 +168,17 @@ class NERAgentPipeline:
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
         """The ReAct loop: Thought -> Action -> Observation."""
         
-        # --- SECURITY CHECK (Sentinel Phase 1) ---
-        if not self._is_input_safe(term, sentence):
+        # --- SECURITY CHECK (Sanitizer + Sentinel) ---
+        is_safe, term_clean, sentence_clean = self._is_input_safe(term, sentence)
+        if not is_safe:
             return None
 
         messages = [
             {"role": "system", "content": self._agent_system_prompt()},
-            {"role": "user", "content": f"Sentence: {sentence}\nTerm to classify: {term}"}
+            {"role": "user", "content": f"Sentence: {sentence_clean}\nTerm to classify: {term_clean}"}
         ]
 
-        for step in range(self.max_agent_steps):
+        for step in range(self.max_agent_s_steps if hasattr(self, 'max_agent_s_steps') else self.max_agent_steps):
             response = generate(self.classification_model_id, messages, 1024, 0)
             messages.append({"role": "assistant", "content": response})
             
@@ -171,7 +209,7 @@ class NERAgentPipeline:
                 except Exception as e:
                     observation = f"Error executing tool: {str(e)}"
 
-                messages.append({"role": "user", "content": f"OBSERVATION: {observation}"})
+                messages.append({"role": "user", "annotated_content": f"OBSERVATION: {observation}"})
             else:
                 logger.warning("Agent failed to provide an ACTION or FINAL_VERDICT.")
                 break
@@ -260,7 +298,7 @@ if __name__ == "__main__":
             
             try:
                 results = agent.extract([query])
-                found_matches = [e.text for e in results if e.type.upper() == expected]
+                found_matches = [e.text for e_res in results if (e := e_res) and e.type.upper() == expected]
                 
                 if found_matches:
                     print(f"  [PASS] Found match: {found_matches}")
