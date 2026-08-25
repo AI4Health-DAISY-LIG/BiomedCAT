@@ -27,7 +27,7 @@ class NERAgentPipeline:
         self.max_agent_steps = 5  # Limite pour éviter les boucles infinies
 
     # ---------------------------------------------------------------------------
-    # SECURITY (Sentinel Phase 1)
+    # SECURITY (Sentinel)
     # ---------------------------------------------------------------------------
 
     def _is_input_safe(self, term: str, sentence: str) -> bool:
