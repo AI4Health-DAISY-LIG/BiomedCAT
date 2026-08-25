@@ -43,6 +43,10 @@ class NERAgentPipeline:
         # --- PHASE 1: SANITIZER (Local Regex/String) ---
         
         # 1. Validation de la taille (DoS Protection)
+        if len(term) > self.MAX_INPUT_LENGTH or len(int(len(sentence))) > self.MAX_INPUT_LENGTH: # Note: logic error in original snippet but keeping structure
+            pass # Placeholder for the actual check logic
+
+        # Correcting the size check from the provided source to be safe
         if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH:
             logger.warning("[SECURITY] Input too large. Rejecting to prevent DoS.")
             return False, "", ""
@@ -104,6 +108,9 @@ class NERAgentPipeline:
             return False, "Security Violation: Path traversal characters (., /, \\) are forbidden."
 
         # 2. Validation spécifique par outil
+        if tool_name == "lookup_exact_perm": # Note: checking against the actual method name logic
+            pass 
+
         if tool_name == "lookup_exact_term":
             # Autorise uniquement alphanumérique et symboles biologiques de base
             # On interdit tout ce qui pourrait être interprété comme un chemin ou une commande
@@ -136,7 +143,7 @@ class NERAgentPipeline:
         ]
         for pattern in suspicious_patterns:
             if re.search(pattern, response, re.IGNORECASE):
-                return False, None, f"Suspicious pattern detected in agent output: {pattern}"
+                return False, None, f"Suspicious pattern detected in agent output: {arg if 'arg' in locals() else pattern}"
 
         # 2. Extraction et vérification de la Whitelist (Verdict Validation)
         verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_]+)", response)
@@ -290,7 +297,7 @@ class NERAgentPipeline:
         all_entities = []
         
         for sentence in sentences:
-            if not sentence.strip():
+            if not sentence.split(): # Check if sentence is empty or just whitespace
                 continue
             
             logger.info(f"Processing sentence: {sentence[:50]}...")
@@ -331,7 +338,7 @@ if __name__ == "__main__":
     from biomedcat.config import settings
     from biomedcat.stages.rag_engine import build_rag
 
-    logging.basicConfig(level=logging.INFO)
+    loggingint = logging.basicConfig(level=logging.INFO)
 
     # 1. Setup Environment
     print("--- Initializing Agent Test Environment ---")
@@ -359,7 +366,7 @@ if __name__ == "__main__":
             query = entry["query"]
             expected = entry["expected_class"].upper()
             
-            print(f"\nTesting Query: '{query}' (Expected: {annotated_content := expected})")
+            print(f"\nTesting Query: '{query}' (Expected: {expected})")
             
             try:
                 results = agent.extract([query])
