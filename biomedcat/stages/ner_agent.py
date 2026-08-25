@@ -71,6 +71,7 @@ class NERAgentPipeline:
         meta = flat_data[class_name]["metadata"]
         hierarchy = {
             "parent": meta.get("parent"),
+
             "ancestors": meta.get("ancestors", []),
             "children": meta.get("children", []), # Note: structure dépend de la version du JSON
             "siblings": meta.get("siblings", []),
@@ -127,7 +128,7 @@ class NERAgentPipeline:
                 observation = ""
                 try:
                     if tool_name == "lookup_exact_term":
-                        observation = self.tool_lookup_exact_term(arg_str)
+                        observation = self.tool_lookup_int_term(arg_str) if hasattr(self, 'tool_lookup_int_term') else self.tool_lookup_exact_term(arg_str)
                     elif tool_name == "semantic_context_search":
                         observation = self.tool_semantic_context_search(arg_str)
                     elif tool_name == "get_class_hierarchy":
@@ -178,14 +179,13 @@ class NERAgentPipeline:
             if not candidates:
                 continue
 
-            # 2. Agentic Classification & Verification Phase (M2 + M3)
+            # 2. Agentic Classification & Verification Phase (M2)
             for term in candidates:
                 # The Agent performs the reasoning loop
                 final_type = self._run_agentic_loop(term, sentence)
                 
                 if final_type:
                     # We create the entity. 
-                    # Note: In a full pipeline, we would call the 'Verifier' (M3) here.
                     all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
 
         return all_entities
@@ -194,3 +194,63 @@ def implements_verification(verdict: str) -> str:
     """Helper to ensure the verdict is valid."""
     return verdict if verdict in ENTITY_TYPES else "NONE"
 
+if __name__ == "__main__":
+    import json
+    from pathlib import Path
+    from biomedcat.config import settings
+    from biomedcat.stages.rag_engine import build_rag
+
+    logging.basicConfig(level=logging.INFO)
+
+    # 1. Setup Environment
+    print("--- Initializing Agent Test Environment ---")
+    rag = build_rag()
+    agent = NERAgentPipeline(
+        rag_engine=rag,
+        extraction_model_id=settings.extraction_model_id,
+        classification_model_id=settings.classification_model_id
+    )
+
+    # 2. Load QA Data
+    qa_file = Path("tests/qa_data.json")
+    if not qa_file.exists():
+        print(f"Error: Test file {qa_file} not found.")
+    else:
+        with open(qa_for_test := qa_file, "r", encoding="utf-8") as f:
+            qa_data = json.load(f)
+
+        print(f"--- Running QA Data Test ({len(qa_data)} queries) ---")
+        passed = 0
+        failed = 0
+
+        for entry in qa_data:
+            query = entry["query"]
+            expected = entry["expected_class"].upper() # Normalize to uppercase for comparison
+            
+            print(f"\nTesting Query: '{query}' (Expected: {expected})")
+            
+            try:
+                # We treat the query as a single-sentence document
+                results = agent.extract([query])
+                
+                # Check if any extracted entity matches the expected type
+                found_matches = [e.text for e in results if e.type.upper() == expected]
+                
+                if found_matches:
+                    print(f"  [PASS] Found match: {found_matches}")
+                    passed += 1
+                else:
+                    found_types = [f"{e.text} ({e.type})" for e in results]
+                    print(f"  [FAIL] No match found. Extracted: {found_types}")
+                    failed += 1
+            except Exception as e:
+                print(f"  [ERROR] Test execution failed: {e}")
+                failed += 1
+
+        print("\n" + "="*30)
+        print("      FINAL TEST SUMMARY")
+        print("="*30)
+        print(f"Total Queries: {len(qa_data)}")
+        print(f"Passed:        {passed}")
+        print(f"Failed:        {failed}")
+        print("="*30)
