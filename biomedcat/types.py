@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import json
-from biolink_yml_processor import biolink_yml_processor
+from biomedcat.stages.biolink_yml_processor import biolink_yml_processor
 
 
 BASE_DIR = Path(__file__).parent.absolute()
@@ -14,7 +14,8 @@ if BIOLINK_FILE_PATH.is_file():
         biolink_info_flat = json.load(json_data)
 else:
     print ("Loading state of the art data model and computing local knowledge base...")
-    nested_result, flat_result = biolink_yml_processor()
+    nested_result, biolink_info_flat = biolink_yml_processor()
+    print("biolink data model processing... done.")
 
 
 # The seven biomedical entity types an Entity.type can hold, and one gloss each.
