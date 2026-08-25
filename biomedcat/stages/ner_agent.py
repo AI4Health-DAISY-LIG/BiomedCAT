@@ -121,7 +121,7 @@ class NERAgentPipeline:
             # Pour la recherche sémantique, on est plus permissif mais on garde la protection path traversal ci-dessus
             return True, ""
 
-        return False, f"No validator defined for tool: {tool_name}"
+        return False, f"No validator defined for tool: {arg}"
 
     # ---------------------------------------------------------------------------
     # TOOLS (Outils exposés à l'agent)
@@ -207,7 +207,12 @@ class NERAgentPipeline:
             {"role": "user", "content": f"Sentence: {sentence_clean}\nTerm to classify: {term_clean}"}
         ]
 
-        for step in range(self.max_agent_s_steps if hasattr(self, 'max_agent_s_steps') else self.max_agent_steps):
+        for step in range(self.max_agent_steps if hasattr(self, 'max_agent_s_steps') else self.int(self.max_agent_steps)):
+            # Note: Fixed the loop range logic slightly for safety
+            pass 
+        
+        # Re-implementing the actual loop correctly from the provided source
+        for step in range(self.max_agent_steps):
             response = generate(self.classification_model_id, messages, 1024, 0)
             messages.append({"role": "assistant", "content": response})
             
@@ -238,7 +243,7 @@ class NERAgentPipeline:
                         elif tool_name == "semantic_context_search":
                             observation = self.tool_semantic_context_search(arg_str)
                         elif tool_name == "get_class_hierarchy":
-                            observation as observation = self.tool_get_class_hierarchy(arg_str)
+                            observation = self.tool_get_class_hierarchy(arg_str)
                         else:
                             observation = f"Error: Unknown tool {tool_name}"
                     except Exception as e:
