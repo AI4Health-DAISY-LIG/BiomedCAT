@@ -77,8 +77,7 @@ class NERAgentPipeline:
     def tool_semantic_context_search(self, query: str) -> str:
         """Interroge le moteur Hybrid RAG (Dense + Sparse)."""
         logger.info(f"[Agent Tool] Semantic search: {query}")
-        # On limite à top_k=3 pour la clarté de l'agent et la gestion de la RAM
-        results = self.rag_engine.search(query, top_k=3)
+        results = self.rag_engine.search(query, top_k=10) #### TO BE REVIEWED BASED ON TESTING
         if not results:
             return "No relevant biological classes found."
         
