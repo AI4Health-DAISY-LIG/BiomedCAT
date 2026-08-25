@@ -94,6 +94,35 @@ class NERAgentPipeline:
             logger.error(f"[SECURITY ERROR] Error during sanitization: {e}")
             return False, "", ""
 
+    def _validate_tool_argument(self, tool_name: str, arg: str) -> Tuple[bool, str]:
+        """
+        Couche de Sandboxing : Validation stricte des arguments extraits par l'agent.
+        Empêche le path traversal et l'exécution d'arguments non autorisés.
+        """
+        # 1. Protection globale contre le path traversal (interdiction de . et /)
+        if any(char in arg for char in [".", "/", "\\"]):
+            return False, "Security Violation: Path traversal characters (., /, \\) are forbidden."
+
+        # 2. Validation spécifique par outil
+        if tool_name == "lookup_exact_term":
+            # Autorise uniquement alphanumérique et symboles biologiques de base
+            # On interdit tout ce qui pourrait être interprété comme un chemin ou une commande
+            if not re.match(r"^[a-zA-Z0-9\s\+\-\(\)\_\!]+$", arg):
+                return False, "Invalid characters in term. Only alphanumeric and biological symbols allowed."
+            return True, ""
+
+        elif tool_name == "get_class_hierarchy":
+            # Whitelist : La classe doit exister dans l'ontologie chargée
+            if arg not in self.rag_engine.flat_data:
+                return False, f"Class '{arg}' not found in ontology whitelist."
+            return True, ""
+
+        elif tool_name == "semantic_context_search":
+            # Pour la recherche sémantique, on est plus permissif mais on garde la protection path traversal ci-dessus
+            return True, ""
+
+        return False, f"No validator defined for tool: {tool_name}"
+
     # ---------------------------------------------------------------------------
     # TOOLS (Outils exposés à l'agent)
     # ---------------------------------------------------------------------------
@@ -196,18 +225,24 @@ class NERAgentPipeline:
                 tool_name = action_match.group(1)
                 arg_str = action_match.group(2).strip().strip("'").strip('"')
                 
-                observation = ""
-                try:
-                    if tool_name == "lookup_exact_term":
-                        observation = self.tool_lookup_exact_term(arg_str)
-                    elif tool_name == "semantic_context_search":
-                        observation = self.tool_semantic_context_search(arg_str)
-                    elif tool_name == "get_class_hierarchy":
-                        observation = self.tool_get_class_hierarchy(arg_str)
-                    else:
-                        observation = f"Error: Unknown tool {tool_name}"
-                except Exception as e:
-                    observation = f"Error executing tool: {str(e)}"
+                # --- SANDBOXING LAYER: Argument Validation ---
+                is_valid, error_msg = self._validate_tool_argument(tool_name, arg_str)
+                if not is_valid:
+                    observation = f"Error: {error_msg}"
+                    logger.warning(f"[SECURITY ALERT] Agent attempted invalid tool call: {tool_name}({arg_str}) -> {error_msg}")
+                else:
+                    # Proceed with execution only if valid
+                    try:
+                        if tool_name == "lookup_exact_term":
+                            observation = self.tool_lookup_exact_term(arg_str)
+                        elif tool_name == "semantic_context_search":
+                            observation = self.tool_semantic_context_search(arg_str)
+                        elif tool_name == "get_class_hierarchy":
+                            observation as observation = self.tool_get_class_hierarchy(arg_str)
+                        else:
+                            observation = f"Error: Unknown tool {tool_name}"
+                    except Exception as e:
+                        observation = f"Error executing tool: {str(e)}"
 
                 messages.append({"role": "user", "annotated_content": f"OBSERVATION: {observation}"})
             else:
