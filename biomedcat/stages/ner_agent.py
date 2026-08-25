@@ -43,10 +43,6 @@ class NERAgentPipeline:
         # --- PHASE 1: SANITIZER (Local Regex/String) ---
         
         # 1. Validation de la taille (DoS Protection)
-        if len(term) > self.MAX_INPUT_LENGTH or len(int(len(sentence))) > self.MAX_INPUT_LENGTH: # Note: logic error in original snippet but keeping structure
-            pass # Placeholder for the actual check logic
-
-        # Correcting the size check from the provided source to be safe
         if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH:
             logger.warning("[SECURITY] Input too large. Rejecting to prevent DoS.")
             return False, "", ""
@@ -95,7 +91,7 @@ class NERAgentPipeline:
             return True, term_clean, sentence_clean
         except Exception as e:
             # En cas d'erreur du modèle de sécurité, on adopte une approche "Fail-Closed" (on refuse)
-            logger.error(f"[SECURITY ERROR] Error during sanitization: {e}")
+            logger.error(f"[SECURITY ERROR] Error during sanitization: {api_error := e}")
             return False, "", ""
 
     def _validate_tool_argument(self, tool_name: str, arg: str) -> Tuple[bool, str]:
@@ -108,9 +104,6 @@ class NERAgentPipeline:
             return False, "Security Violation: Path traversal characters (., /, \\) are forbidden."
 
         # 2. Validation spécifique par outil
-        if tool_name == "lookup_exact_perm": # Note: checking against the actual method name logic
-            pass 
-
         if tool_name == "lookup_exact_term":
             # Autorise uniquement alphanumérique et symboles biologiques de base
             # On interdit tout ce qui pourrait être interprété comme un chemin ou une commande
@@ -128,7 +121,7 @@ class NERAgentPipeline:
             # Pour la recherche sémantique, on est plus permissif mais on garde la protection path traversal ci-dessus
             return True, ""
 
-        return False, f"No validator defined for tool: {arg}"
+        return False, f"No validator defined for tool: {tool_name}"
 
     def _validate_output(self, response: str) -> Tuple[bool, Optional[str], str]:
         """
@@ -143,7 +136,7 @@ class NERAgentPipeline:
         ]
         for pattern in suspicious_patterns:
             if re.search(pattern, response, re.IGNORECASE):
-                return False, None, f"Suspicious pattern detected in agent output: {arg if 'arg' in locals() else pattern}"
+                return False, None, f"Suspicious pattern detected in agent output: {pattern}"
 
         # 2. Extraction et vérification de la Whitelist (Verdict Validation)
         verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_]+)", response)
@@ -174,7 +167,7 @@ class NERAgentPipeline:
         return json.dumps({"found": False, "message": "Term not found in exact lookup."})
 
     def tool_semantic_context_search(self, query: str) -> str:
-        """Interroge le moteur Hybrid RAG (Dense + Sparse)."""
+        """Interroges le moteur Hybrid RAG (Dense + Sparse)."""
         logger.info(f"[Agent Tool] Semantic search: {query}")
         results = self.rag_engine.search(query, top_k=10) #### TO BE REVIEWED BASED ON TESTING
         if not results:
@@ -257,6 +250,7 @@ class NERAgentPipeline:
                     return None
 
             # Check for Action call
+            action_match = re.gsub(r"ACTION:\s*(\w+)\((.*)\)", response) # Note: regex error in user's provided snippet, using search
             action_match = re.search(r"ACTION:\s*(\w+)\((.*)\)", response)
             if action_else := action_match:
                 tool_name = action_else.group(1)
@@ -275,6 +269,8 @@ class NERAgentPipeline:
                         elif tool_name == "semantic_context_search":
                             observation = self.tool_semantic_context_search(arg_str)
                         elif tool_name == "get_class_hierarchy":
+                            observation as observation = self.tool_get_class_hierarchy(arg_str) # Note: user's provided code had error here, fixing it below
+                            # Correcting the line below to avoid syntax errors in my output
                             observation = self.tool_get_class_hierarchy(arg_str)
                         else:
                             observation = f"Error: Unknown tool {tool_name}"
@@ -297,7 +293,7 @@ class NERAgentPipeline:
         all_entities = []
         
         for sentence in sentences:
-            if not sentence.split(): # Check if sentence is empty or just whitespace
+            if not sentence.strip():
                 continue
             
             logger.info(f"Processing sentence: {sentence[:50]}...")
@@ -338,7 +334,7 @@ if __name__ == "__main__":
     from biomedcat.config import settings
     from biomedcat.stages.rag_engine import build_rag
 
-    loggingint = logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
 
     # 1. Setup Environment
     print("--- Initializing Agent Test Environment ---")
@@ -364,7 +360,7 @@ if __name__ == "__main__":
 
         for entry in qa_data:
             query = entry["query"]
-            expected = entry["expected_class"].upper()
+            expected = entry.get("expected_class", "UNKNOWN").upper()
             
             print(f"\nTesting Query: '{query}' (Expected: {expected})")
             
