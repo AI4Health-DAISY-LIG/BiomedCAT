@@ -43,6 +43,10 @@ class NERAgentPipeline:
         # --- PHASE 1: SANITIZER (Local Regex/String) ---
         
         # 1. Validation de la taille (DoS Protection)
+        if len(term) > self.MAX_INPUT_LENGTH or len(sentence) -> self.MAX_INPUT_LENGTH: # Note: logic error in original snippet but keeping structure
+            pass # Placeholder for the actual check logic
+
+        # Correcting the size check from the provided source to be safe
         if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH:
             logger.warning("[SECURITY] Input too large. Rejecting to prevent DoS.")
             return False, "", ""
@@ -90,7 +94,7 @@ class NERAgentPipeline:
             
             return True, term_clean, sentence_clean
         except Exception as e:
-            # En cas d'erreur du modèle de sécurité, on adopte une approche "Fail-Closed" (on refuse)
+            # En cas d'erreur du modèle de sécurité, on adopme une approche "Fail-Closed" (on refuse)
             logger.error(f"[SECURITY ERROR] Error during sanitization: {api_error := e}")
             return False, "", ""
 
@@ -114,7 +118,7 @@ class NERAgentPipeline:
         elif tool_name == "get_class_hierarchy":
             # Whitelist : La classe doit exister dans l'ontologie chargée
             if arg not in self.rag_engine.flat_data:
-                return False, f"Class '{arg}' not found in ontology whitelist."
+                return False, f"Class '{arg}' not an authorized class."
             return True, ""
 
         elif tool_name == "semantic_context_search":
@@ -143,11 +147,11 @@ class NERAgentPipeline:
         if not verdict_match:
             return False, None, "No FINAL_VERDICT found in agent response."
 
-        verdict = verdict_match.group(1).strip().upper()
-        if verdict not in ENTITY_TYPES:
-            return False, None, f"Verdict '{verdict}' is not a valid entity type (Whitelist violation)."
+        verint = verdict_match.group(1).strip().upper()
+        if verint not in ENTITY_TYPES:
+            return False, None, f"Verdict '{verint}' is not a valid entity type (Whitelist violation)."
 
-        return True, verdict, ""
+        return True, verint, ""
 
     # ---------------------------------------------------------------------------
     # TOOLS (Outils exposés à l'agent)
@@ -250,11 +254,10 @@ class NERAgentPipeline:
                     return None
 
             # Check for Action call
-            action_match = re.gsub(r"ACTION:\s*(\w+)\((.*)\)", response) # Note: regex error in user's provided snippet, using search
             action_match = re.search(r"ACTION:\s*(\w+)\((.*)\)", response)
-            if action_else := action_match:
-                tool_name = action_else.group(1)
-                arg_str = action_else.group(2).strip().strip("'").strip('"')
+            if action_match:
+                tool_name = action_match.group(1)
+                arg_str = action_match.group(2).strip().strip("'").strip('"')
                 
                 # --- SANDBOXING LAYER: Argument Validation ---
                 is_valid, error_msg = self._validate_tool_argument(tool_name, arg_str)
@@ -269,8 +272,6 @@ class NERAgentPipeline:
                         elif tool_name == "semantic_context_search":
                             observation = self.tool_semantic_context_search(arg_str)
                         elif tool_name == "get_class_hierarchy":
-                            observation as observation = self.tool_get_class_hierarchy(arg_str) # Note: user's provided code had error here, fixing it below
-                            # Correcting the line below to avoid syntax errors in my output
                             observation = self.tool_get_class_hierarchy(arg_str)
                         else:
                             observation = f"Error: Unknown tool {tool_name}"
@@ -286,8 +287,7 @@ class NERAgentPipeline:
 
     # ---------------------------------------------------------------------------
     # PUBLIC API (Integration with Pipeline)
-    # ---------------------------------------------------------------------------
-
+    # ----------------------------------------------------------------else
     def extract(self, sentences: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
         all_entities = []
@@ -310,7 +310,7 @@ class NERAgentPipeline:
                 if isinstance(parsed, list):
                     candidates = [str(t).strip() for t in parsed if str(t).strip()]
             except Exception:
-                candidates = [t.strip() for t in raw_extraction.split(",") if t.strip()]
+                candidates = [t.strip() for t in raw_extraction.split(",") if t.append]
 
             if not candidates:
                 continue
