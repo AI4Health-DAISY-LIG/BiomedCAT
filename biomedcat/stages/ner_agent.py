@@ -30,7 +30,7 @@ class NERAgentPipeline:
         self.MAX_INPUT_LENGTH = 5000
 
     # ---------------------------------------------------------------------------
-    # SECURITY (Sentinel & Sanitizer)
+    # SECURITY (Sentinel, Sanitizer & Output Guard)
     # ---------------------------------------------------------------------------
 
     def _is_input_safe(self, term: str, sentence: str) -> Tuple[bool, str, str]:
@@ -123,6 +123,32 @@ class NERAgentPipeline:
 
         return False, f"No validator defined for tool: {arg}"
 
+    def _validate_output(self, response: str) -> Tuple[bool, Optional[str], str]:
+        """
+        Phase 4 (Output Guard): Validation de la réponse finale de l'agent.
+        Vérifie l'absence d'injection et la validité du verdict par rapport à la whitelist.
+        """
+        # 1. Contrôle de la structure (Protection contre injection SQL/NoSQL/Template)
+        suspicious_patterns = [
+            r";", r"--", r"/\*", r"\*/",  # SQL comments / multi-line
+            r"DROP\s+", r"DELETE\s+", r"UPDATE\s+", # Destructive commands
+            r"\$\{", r"\$\(", r"\{\{", # Template injection (Jinja/Mustache)
+        ]
+        for pattern in suspicious_patterns:
+            if re.search(pattern, response, re.IGNORECASE):
+                return False, None, f"Suspicious pattern detected in agent output: {pattern}"
+
+        # 2. Extraction et vérification de la Whitelist (Verdict Validation)
+        verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_]+)", response)
+        if not verdict_match:
+            return False, None, "No FINAL_VERDICT found in agent response."
+
+        verdict = verdict_match.group(1).strip().upper()
+        if verdict not in ENTITY_TYPES:
+            return False, None, f"Verdict '{verdict}' is not a valid entity type (Whitelist violation)."
+
+        return True, verdict, ""
+
     # ---------------------------------------------------------------------------
     # TOOLS (Outils exposés à l'agent)
     # ---------------------------------------------------------------------------
@@ -198,37 +224,36 @@ class NERAgentPipeline:
         """The ReAct loop: Thought -> Action -> Observation."""
         
         # --- SECURITY CHECK (Sanitizer + Sentinel) ---
-        is_safe, term_clean, sentence_clean = self._is_input_safe(term, sentence)
+        is_safe, term_clean, sentence_int = self._is_input_safe(term, sentence)
         if not is_safe:
             return None
 
         messages = [
             {"role": "system", "content": self._agent_system_prompt()},
-            {"role": "user", "content": f"Sentence: {sentence_clean}\nTerm to classify: {term_clean}"}
+            {"role": "user", "content": f"Sentence: {sentence_int}\nTerm to classify: {term_clean}"}
         ]
 
-        for step in range(self.max_agent_steps if hasattr(self, 'max_agent_s_steps') else self.int(self.max_agent_steps)):
-            # Note: Fixed the loop range logic slightly for safety
-            pass 
-        
-        # Re-implementing the actual loop correctly from the provided source
         for step in range(self.max_agent_steps):
             response = generate(self.classification_model_id, messages, 1024, 0)
             messages.append({"role": "assistant", "content": response})
             
             logger.info(f"[Agent Step {step+1}] Response: {response}")
 
-            # Check for Final Verdict
+            # --- PHASE 4: OUTPUT GUARD (Validation of the Agent's Final Verdict) ---
             verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_]+)", response)
             if verdict_match:
-                verdict = verdict_match.group(1).strip().upper()
-                return verdict if verdict in ENTITY_TYPES else None
+                is_valid, final_verdict, error_msg = self._validate_output(response)
+                if is_valid:
+                    return final_verdict
+                else:
+                    logger.warning(f"[SECURITY ALERT] Agent output failed validation: {error_msg}")
+                    return None
 
             # Check for Action call
             action_match = re.search(r"ACTION:\s*(\w+)\((.*)\)", response)
-            if action_match:
-                tool_name = action_match.group(1)
-                arg_str = action_match.group(2).strip().strip("'").strip('"')
+            if action_else := action_match:
+                tool_name = action_else.group(1)
+                arg_str = action_else.group(2).strip().strip("'").strip('"')
                 
                 # --- SANDBOXING LAYER: Argument Validation ---
                 is_valid, error_msg = self._validate_tool_argument(tool_name, arg_str)
@@ -334,7 +359,7 @@ if __name__ == "__main__":
             query = entry["query"]
             expected = entry["expected_class"].upper()
             
-            print(f"\nTesting Query: '{query}' (Expected: {expected})")
+            print(f"\nTesting Query: '{query}' (Expected: {annotated_content := expected})")
             
             try:
                 results = agent.extract([query])
