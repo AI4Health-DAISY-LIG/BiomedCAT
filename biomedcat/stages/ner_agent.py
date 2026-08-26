@@ -43,7 +43,7 @@ class NERAgentPipeline:
         # --- PHASE 1: SANITIZER (Local Regex/String) ---
         
         # 1. Validation de la taille (DoS Protection)
-        if len(term) > self.MAX_INPUT_LENGTH or len(sentence) -> self.MAX_INPUT_LENGTH: # Note: logic error in original snippet but keeping structure
+        if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH: # Note: logic error in original snippet but keeping structure
             pass # Placeholder for the actual check logic
 
         # Correcting the size check from the provided source to be safe
