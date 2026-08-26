@@ -3,17 +3,13 @@ import json
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 
+import spacy
+from spacy.lang.en import English
+
 from biomedcat.runtime import generate
 from biomedcat.types import Entity, ENTITY_TYPES
 from biomedcat.stages.rag_engine import BiomedRAG
 from biomedcat import prompts
-try:
-    import en_core_sci_sm
-    MODEL_AVAILABLE = True
-except ImportError:
-    MODEL_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("scispaCy model not found. Falling back to basic tokenizer.")
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +35,14 @@ class NERAgentPipeline:
         self.sanitization_model_id = sanitization_model_id
         self.max_agent_steps = 5  # Limite pour éviter les boucles infinies
         self.MAX_INPUT_LENGTH = 5000
+        
+        # Charger le modèle SpaCy une seule fois
+        try:
+            self.nlp = spacy.load("en_core_sci_sm")
+            logger.info("Successfully loaded scispaCy model")
+        except OSError:
+            logger.warning("scispaCy model not found. Falling back to basic tokenizer.")
+            self.nlp = None
 
     # ---------------------------------------------------------------------------
     # SECURITY (Sentinel, Sanitizer & Output Guard)
@@ -212,6 +216,29 @@ class NERAgentPipeline:
         return json.dumps(hierarchy, ensure_ascii=False)
 
     # ---------------------------------------------------------------------------
+    # EXTRACTOR WITH SPACY
+    # ---------------------------------------------------------------------------
+
+    def _extract_candidates_spacy(self, sentence: str) -> List[str]:
+        """Extraire les candidats avec en_core_sci_sm au lieu de LLM."""
+        if not self.nlp:
+            logger.warning("SpaCy model not available, falling back to basic extraction")
+            return []
+            
+        try:
+            doc = self.nlp(sentence)
+            # Extraire les tokens et les phrases
+            candidates = []
+            for token in doc:
+                # Garder les noms, noms propres et adjectifs qui sont des termes potentiels
+                if token.pos_ in ["NOUN", "PROPN", "ADJ"] and len(token.text) > 2:
+                    candidates.append(token.text)
+            return list(set(candidates))  # Remove duplicates
+        except Exception as e:
+            logger.warning(f"SpaCy extraction failed: {e}")
+            return []
+
+    # ---------------------------------------------------------------------------
     # AGENT CORE LOGIC (ReAct Loop)
     # ---------------------------------------------------------------------------
 
@@ -303,19 +330,8 @@ class NERAgentPipeline:
             
             logger.info(f"Processing sentence: {sentence[:50]}...")
 
-            # 1. Extraction Phase (M1 - Recall)
-            raw_extraction = generate(self.extraction_model_id, 
-                                     prompts.extraction_messages(sentence), 
-                                     512, 0.2)
-            
-            candidates = []
-            try:
-                match = re.search(r"\[.*\]", raw_extraction, re.DOTALL)
-                parsed = json.loads(match.group(0)) if match else json.loads(raw_extraction)
-                if isinstance(parsed, list):
-                    candidates = [str(t).strip() for t in parsed if str(t).strip()]
-            except Exception:
-                candidates = [t.strip() for t in raw_extraction.split(",") if t]
+            # 1. Extraction Phase (M1 - Recall) - Utiliser SpaCy au lieu de LLM
+            candidates = self._extract_candidates_spacy(sentence)
 
             if not candidates:
                 continue

@@ -37,10 +37,11 @@ RUN uv pip install --system \
     transformers \
     pillow \
     pdf2image \
-    langchain-core \
     spacy \
-    scispacy \
-    https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
+    scispacy
+
+# Télécharger le modèle scispaCy
+RUN python -m spacy download en_core_sci_sm
 
 # Copy the application source code
 COPY ./biomedcat /app/biomedcat
