@@ -1,5 +1,6 @@
 import logging
 import requests
+import time
 from biomedcat.config import settings
 
 
@@ -27,27 +28,41 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
         }
     }
 
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return data["message"]["content"].strip()
-    except requests.exceptions.Timeout:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Timeout communicating with Ollama API for model {model_id}")
-        return ""
-    except requests.exceptions.ConnectionError:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Connection error communicating with Ollama API for model {model_id}")
-        return ""
-    except requests.exceptions.HTTPError as e:
-        logger = logging.getLogger(__name__)
-        if e.response.status_code == 404:
-            logger.error(f"Model {model_id} not found on Ollama")
-        else:
-            logger.error(f"HTTP error communicating with Ollama API: {e}")
-        return ""
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Unexpected error communicating with Ollama API: {e}")
-        return ""
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            return data["message"]["content"].strip()
+        except requests.exceptions.Timeout:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Timeout communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return ""
+        except requests.exceptions.ConnectionError:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Connection error communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return ""
+        except requests.exceptions.HTTPError as e:
+            logger = logging.getLogger(__name__)
+            if e.response.status_code == 404:
+                logger.error(f"Model {model_id} not found on Ollama")
+            else:
+                logger.error(f"HTTP error communicating with Ollama API: {e}")
+            return ""
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Unexpected error communicating with Ollama API: {e}")
+            return ""
+    
+    return ""
