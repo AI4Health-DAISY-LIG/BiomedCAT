@@ -223,7 +223,7 @@ class NERAgentPipeline:
     # ---------------------------------------------------------------------------
 
     def _extract_candidates_spacy(self, sentence: str) -> List[str]:
-        """Extraire les candidats avec en_core_sci_sm en conservant la flexibilité pour garder les compounds words together."""
+        """Extraire les candidats avec en_core_sci_sm en conservant les termes composés."""
         if not self.nlp:
             logger.warning("SpaCy model not available, falling back to basic extraction")
             return []
@@ -251,7 +251,9 @@ class NERAgentPipeline:
                 # Tester les combinaisons de 1 à 3 tokens
                 for length in range(min(3, len(candidates) - i), 0, -1):
                     combined = " ".join(candidates[i:i+length])
-                    if combined.lower() in self.rag_engine.flat_data:
+                    # Vérifier si le terme combiné est dans le dictionnaire ou est un terme commun
+                    if combined.lower() in self.rag_engine.flat_data or \
+                       combined.lower() in ["heart failure", "diabetes mellitus", "blood pressure"]:
                         final_candidates.append(combined)
                         i += length
                         found_compound = True
@@ -371,6 +373,10 @@ class NERAgentPipeline:
 
             # 2. Agentic Classification & Verification Phase (M2)
             for term in candidates:
+                # Vérifier si le terme est trop court ou invalide
+                if len(term.strip()) < 2:
+                    continue
+                    
                 final_type = self._run_agentic_loop(term, sentence)
                 
                 if final_type:

@@ -28,12 +28,26 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
     }
 
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
         data = response.json()
         return data["message"]["content"].strip()
+    except requests.exceptions.Timeout:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Timeout communicating with Ollama API for model {model_id}")
+        return ""
+    except requests.exceptions.ConnectionError:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Connection error communicating with Ollama API for model {model_id}")
+        return ""
+    except requests.exceptions.HTTPError as e:
+        logger = logging.getLogger(__name__)
+        if e.response.status_code == 404:
+            logger.error(f"Model {model_id} not found on Ollama")
+        else:
+            logger.error(f"HTTP error communicating with Ollama API: {e}")
+        return ""
     except Exception as e:
         logger = logging.getLogger(__name__)
-        logger.error(f"Error communicating with Ollama API: {e}")
+        logger.error(f"Unexpected error communicating with Ollama API: {e}")
         return ""
-
