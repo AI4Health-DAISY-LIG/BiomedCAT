@@ -237,33 +237,17 @@ class NERAgentPipeline:
                 # Garder les tokens significatifs (noms, noms propres, adjectifs)
                 if token.pos_ in ["NOUN", "PROPN", "ADJ"] and len(token.text) > 2:
                     # Ne pas inclure les mots courants qui ne sont pas des termes biologiques
-                    if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to"]:
+                    if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can"]:
                         candidates.append(token.text)
             
-            # Pour les termes composés, on va essayer de les regrouper intelligemment
-            # Mais garder une approche simple : ne pas diviser les termes qui sont dans le dictionnaire
-            final_candidates = []
-            i = 0
-            while i < len(candidates):
-                # Essayer de construire des termes composés à partir de plusieurs tokens
-                # Si on peut trouver un terme composé dans le dictionnaire, on le prend
-                found_compound = False
-                # Tester les combinaisons de 1 à 3 tokens
-                for length in range(min(3, len(candidates) - i), 0, -1):
-                    combined = " ".join(candidates[i:i+length])
-                    # Vérifier si le terme combiné est dans le dictionnaire ou est un terme commun
-                    if combined.lower() in self.rag_engine.flat_data or \
-                       combined.lower() in ["heart failure", "diabetes mellitus", "blood pressure"]:
-                        final_candidates.append(combined)
-                        i += length
-                        found_compound = True
-                        break
-                
-                if not found_compound:
-                    final_candidates.append(candidates[i])
-                    i += 1
-                    
-            return list(set(final_candidates))  # Remove duplicates
+            # Simplified approach: just return all candidates without complex combination logic
+            # This prevents missing valid terms due to overly complex compound detection
+            final_candidates = list(set(candidates))  # Remove duplicates
+            
+            # Filter out very short or obviously non-biological terms
+            final_candidates = [c for c in final_candidates if len(c) >= 2 and not c.isdigit()]
+            
+            return final_candidates
         except Exception as e:
             logger.warning(f"SpaCy extraction failed: {e}")
             return []
