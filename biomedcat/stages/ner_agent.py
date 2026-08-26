@@ -396,18 +396,18 @@ if __name__ == "__main__":
             
             try:
                 results = agent.extract([query])
-                # Vérifier si le terme attendu est présent dans les résultats (même avec parenthèses)
+                # Vérifier si le terme attendu est présent dans les résultats
                 found_match = False
                 for e_res in results:
                     if e_res:
-                        # Accepter soit l'exact match, soit le match avec parenthèses
-                        if e_res.text.upper() == expected or e_res.text.upper().startswith(f"{expected}("):
-                            found_match = True
-                            break
-                        # Ou vérifier si le terme attendu est contenu dans le texte (cas où on a "insulin (drug)")
-                        elif expected in e_res.text.upper():
-                            found_match = True
-                            break
+                        # Extraire le terme sans le type entre parenthèses
+                        term_only = e_res.text.split(' (')[0] if ' (' in e_res.text else e_res.text
+                        if term_only.upper() == expected:
+                            # Vérifier que le type est correct
+                            expected_type = entry.get("expected_class", "").upper()
+                            if expected_type == "" or e_res.type.upper() == expected_type:
+                                found_match = True
+                                break
                 
                 if found_match:
                     print(f"  [PASS] Found match: {[e.text for e in results]}")
