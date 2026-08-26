@@ -103,7 +103,7 @@ class BiomedCATLauncher(tk.Tk):
         else:
             self._write_log("✅ Docker et Ollama sont prêts.")
             self.status_var.set("Environnement prêt")
-            # Vérifier si le modèle est présent
+            # Vérifier si les modèles sont présents
             threading.Thread(target=self.check_ollama_model, daemon=True).start()
 
     def _check_cmd(self, cmd):
@@ -115,21 +115,41 @@ class BiomedCATLauncher(tk.Tk):
             return False
 
     def check_ollama_model(self):
-        """Vérifie si le modèle llama3.1 est téléchargé, sinon lance le pull."""
-        self._write_log(f"Vérification du modèle {self.model_name}...")
+        """Vérifie si les modèles Ollama sont téléchargés, sinon lance les pulls."""
+        self._write_log("Vérification des modèles Ollama...")
+        
+        # Liste de tous les modèles nécessaires
+        required_models = [
+            self.model_name,  # "llama3.1"
+            "gemma4:e4b-it-qat",  # classification_model_id
+            "llama-guard3:8b",    # sanitization_model_id
+            "qwen2.5vl:7b"        # ocr_model_id
+        ]
+        
         try:
+            # Vérifier qu'Ollama est disponible
             result = subprocess.run(["ollama", "list"], capture_output=True, text=True)
-            if self.model_name not in result.stdout:
-                self._write_log(f"📥 Modèle {self.model_name} non trouvé. Téléchargement en cours...")
-                self.status_var.set("Téléchargement du modèle...")
-                # On lance le pull dans un processus qui redirige vers notre queue de logs
-                self._run_process_to_queue(["ollama", "pull", self.model_name])
-            else:
-                self._write_log(f"✅ Modèle {self.model_name} est prêt.")
-                self.status_var.set("Modèle prêt")
             
+            missing_models = []
+            for model in required_models:
+                if model not in result.stdout:
+                    missing_models.append(model)
+            
+            if missing_models:
+                self._write_log(f"📥 Modèles manquants : {missing_models}. Téléchargement en cours...")
+                self.status_var.set("Téléchargement des modèles...")
+                
+                # Télécharger chaque modèle manquant
+                for model in missing_models:
+                    self._write_log(f" Téléchargement du modèle : {model}")
+                    self._run_process_to_queue(["ollama", "pull", model])
+            else:
+                self._write_log("✅ Tous les modèles Ollama sont prêts.")
+                self.status_var.set("Modèles prêts")
+                
             # Télécharger le modèle RAG si nécessaire
             self._download_rag_model()
+            
         except Exception as e:
             self._write_log(f"❌ Erreur Ollama: {str(e)}")
 
