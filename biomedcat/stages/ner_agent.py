@@ -240,8 +240,61 @@ class NERAgentPipeline:
                     if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can"]:
                         candidates.append(token.text)
 
-            final_candidates = " ".join(candidates.join)  # Remove duplicates
-            
+            # Post-traitement pour identifier les termes composés
+            # Regrouper les tokens proches pour former des termes plus longs
+            compound_candidates = []
+            i = 0
+            while i < len(candidates):
+                # Vérifier si le token actuel est un préfixe de composé chimique
+                if i < len(candidates) - 1:
+                    # Exemple : "7,8-didéhydro" + "4,5-époxy" = "7,8-didéhydro-4,5-époxy"
+                    current = candidates[i]
+                    next_token = candidates[i + 1]
+                    
+                    # Si le token suivant commence par un tiret ou contient des caractères spéciaux
+                    # et que le courant est un nombre ou une abréviation, on les combine
+                    if (current.replace('-', '').replace(',', '').isdigit() or 
+                        re.match(r'^[A-Z][a-z]*$', current) or
+                        len(current) > 3) and \
+                       (next_token.startswith('-') or 
+                        re.search(r'[0-9][\-–—][0-9]', next_token) or
+                        re.search(r'[0-9][A-Z]', next_token)):
+                        combined = current + "-" + next_token
+                        compound_candidates.append(combined)
+                        i += 2
+                        continue
+                
+                compound_candidates.append(candidates[i])
+                i += 1
+
+            # Filtrer les candidats pour garder uniquement les entités biologiques valides
+            filtered_candidates = []
+            for candidate in compound_candidates:
+                # Ignorer les tokens trop courts ou numériques uniquement
+                if len(candidate) < 2 or candidate.isdigit():
+                    continue
+                    
+                # Vérifier qu'il y a au moins un caractère alphabétique
+                if not re.search(r'[a-zA-Z]', candidate):
+                    continue
+                    
+                # Gérer les caractères spéciaux typiques dans les molécules
+                # Permettre les tirets, points, parenthèses, chiffres, lettres
+                if re.match(r'^[a-zA-Z0-9\-\.()\[\]_]+$', candidate):
+                    filtered_candidates.append(candidate)
+                else:
+                    # Pour les cas spéciaux avec caractères accentués ou autres
+                    if re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
+                        filtered_candidates.append(candidate)
+
+            # Supprimer les doublons tout en maintenant l'ordre
+            seen = set()
+            final_candidates = []
+            for candidate in filtered_candidates:
+                if candidate.lower() not in seen:
+                    seen.add(candidate.lower())
+                    final_candidates.append(candidate)
+
             return final_candidates
         except Exception as e:
             logger.warning(f"SpaCy extraction failed: {e}")
