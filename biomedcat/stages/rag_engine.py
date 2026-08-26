@@ -14,6 +14,29 @@ import torch
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
 
+def download_model_if_needed(model_name: str, cache_dir: str):
+    """Télécharge le modèle SentenceTransformer s'il n'existe pas déjà."""
+    try:
+        from sentence_transformers import SentenceTransformer
+        import os
+        
+        # Chemin où le modèle sera stocké
+        model_path = os.path.join(cache_dir, model_name.replace("/", "_"))
+        
+        # Si le modèle existe déjà, ne rien faire
+        if os.path.exists(model_path):
+            return model_path
+        
+        # Télécharger le modèle
+        print(f"[*] Téléchargement du modèle {model_name}...")
+        model = SentenceTransformer(model_name)
+        model.save(model_path)
+        print(f"[*] Modèle {model_name} téléchargé et sauvegardé dans {model_path}")
+        return model_path
+    except Exception as e:
+        print(f"[!] Échec du téléchargement du modèle {model_name}: {e}")
+        return None
+
 class BiomedRAG:
     """
     Moteur de recherche hybride (Dense + Sparse) pour le modèle Biolink.
@@ -29,9 +52,24 @@ class BiomedRAG:
         # Load Models
         # Bind embedding model                                                                                                                          
         print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(                                                                                                                     
-            model_name=self.config.RAG_embedding_model,
-            device="cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Vérifier si le modèle est déjà téléchargé localement
+        model_cache_dir = os.path.join(self.config.internal_data_path, "models")
+        os.makedirs(model_cache_dir, exist_ok=True)
+        local_model_path = download_model_if_needed(self.config.RAG_embedding_model, model_cache_dir)
+
+        if local_model_path:
+            print(f"[*] Utilisation du modèle local: {local_model_path}")
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=local_model_path,
+                device="cuda" if torch.cuda.is_available() else "cpu"
+            )
+        else:
+            print(f"[*] Chargement du modèle distant: {self.config.RAG_embedding_model}")
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=self.config.RAG_embedding_model,
+                device="cuda" if torch.cuda.is_available() else "cpu"
+            )
 
         print("[*] Loading scispaCy model for tokenization...")                                                                                                                            
         try:                                                                                                                                                                               

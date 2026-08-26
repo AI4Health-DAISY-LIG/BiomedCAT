@@ -18,7 +18,7 @@ class BiomedCATLauncher(tk.Tk):
         # Configuration des chemins et commandes
         self.model_name = "llama3.1"
         self.docker_compose_cmd = ["docker", "compose", "up", "-d"]
-        self	= ["docker", "compose", "down"]
+        self.docker_compose_down_cmd = ["docker", "compose", "down"]
         self.log_cmd = ["docker", "logs", "-f", "biomedcat_pipeline"]
         self.data_dir = os.path.abspath("data")
 
@@ -127,8 +127,35 @@ class BiomedCATLauncher(tk.Tk):
             else:
                 self._write_log(f"✅ Modèle {self.model_name} est prêt.")
                 self.status_var.set("Modèle prêt")
+            
+            # Télécharger le modèle RAG si nécessaire
+            self._download_rag_model()
         except Exception as e:
             self._write_log(f"❌ Erreur Ollama: {str(e)}")
+
+    def _download_rag_model(self):
+        """Télécharge le modèle RAG locallement."""
+        try:
+            # Importer ici pour éviter les problèmes d'importation circulaire
+            from biomedcat.config import Settings
+            from biomedcat.stages.rag_engine import download_model_if_needed
+            import os
+            
+            settings = Settings()
+            model_name = settings.RAG_embedding_model
+            model_cache_dir = os.path.join(settings.internal_data_path, "models")
+            os.makedirs(model_cache_dir, exist_ok=True)
+            
+            self._write_log(f"Vérification du modèle RAG : {model_name}")
+            local_model_path = download_model_if_needed(model_name, model_cache_dir)
+            
+            if local_model_path:
+                self._write_log(f"✅ Modèle RAG téléchargé localement : {local_model_path}")
+            else:
+                self._write_log(f"⚠️  Impossible de télécharger le modèle RAG : {model_name}")
+                
+        except Exception as e:
+            self._write_log(f"❌ Erreur téléchargement modèle RAG : {str(e)}")
 
     def start_services(self):
         """Lance les conteneurs Docker."""
@@ -151,7 +178,7 @@ class BiomedCATLauncher(tk.Tk):
         """Arrête les conteneurs Docker."""
         self._write_log("🛑 Arrêt des services...")
         try:
-            subprocess.run(["docker", "compose", "down"], check=True)
+            subprocess.run(self.docker_compose_down_cmd, check=True)
             self._write_log("✅ Services arrêtés.")
             self.status_var.set("Services arrêtés")
         except Exception as e:
