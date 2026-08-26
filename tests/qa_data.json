@@ -17,11 +17,20 @@
                 ]
   },
   {
-    "query": "insulin is a protein hormone involved in glucose metabolism",
+    "query": "It metabolizes the insulin to produce...",
     "expected": [
                   {
                     "term": "insulin",
                     "type": "protein"
+                  }
+                ]
+  },
+  {
+    "query": "Insulin has been administered after the first event",
+    "expected": [
+                  {
+                    "term": "insulin",
+                    "type": "drug"
                   }
                 ]
   },
@@ -31,6 +40,14 @@
                   {
                     "term": "diabetes mellitus",
                     "type": "disease"
+                  },
+                  {
+                    "term": "metabolic disorder",
+                    "type": "disease"
+                  },
+                  {
+                    "term": "hyperglycemia",
+                    "type": "phenotypic feature"
                   }
                 ]
   },
@@ -53,7 +70,7 @@
                 ]
   },  
   {
-    "query": "CACNA1C gene encodes a calcium channel subunit",
+    "query": "CACNA1C was overexpressed",
     "expected": [
                   {
                     "term": "CACNA1C",
@@ -62,7 +79,7 @@
                 ]
   },  
   {
-    "query": "cacna1c protein is involved in cardiac muscle contraction",
+    "query": "cacna1c is important",
     "expected": [
                   {
                     "term": "cacna1c",
@@ -71,7 +88,7 @@
                 ]
   },
   {
-    "query": "The patient was diagnosed with Alzheimer's disease and treated with memantine",
+    "query": "the protein gene is expressed in the hospital",
     "expected": [
                   {
                     "term": "Alzheimer's disease",
@@ -80,24 +97,6 @@
                   {
                     "term": "memantine",
                     "type": "small molecule"
-                  }
-                ]
-  },
-  {
-    "query": "The study focused on the role of BRCA1 in DNA repair mechanisms",
-    "expected": [
-                  {
-                    "term": "BRCA1",
-                    "type": "gene"
-                  }
-                ]
-  },
-  {
-    "query": "Mitochondrial dysfunction leads to energy deficiency in cells",
-    "expected": [
-                  {
-                    "term": "mitochondrial",
-                    "type": "cellular component"
                   }
                 ]
   }
