@@ -187,8 +187,12 @@ class BiomedRAG:
         
         for class_name, entry in self.flat_data.items():
             # 1. Préparation pour l'index Dense (ChromaDB)
-            # On utilise le doc_text qui contient déjà la définition + les exemples
-            doc_text = entry["doc_text"]
+            # On crée un corpus textuel basé sur la définition et les exemples pour le matching mot-clé
+            meta = entry["metadata"]
+            definition = meta.get("definition", "")
+            examples_text = " ".join(meta.get("examples", []))
+            doc_text = f"{definition} {examples_text}"
+            
             dense_ids.append(class_name)
             dense_documents.append(doc_text)
             dense_metadatas.append(entry["metadata"])
