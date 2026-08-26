@@ -363,7 +363,12 @@ if __name__ == "__main__":
             
             try:
                 results = agent.extract([query])
-                found_matches = [e.text for e_res in results if (e := e_res) and e.type.upper() == expected]
+                found_matches = []
+                for e_res in results:
+                    if e_res:
+                        # Check for exact match or match with parentheses suffix
+                        if e_res.text.upper() == expected or e_res.text.upper().startswith(f"{expected}("):
+                            found_matches.append(e_res.text)
                 
                 if found_matches:
                     print(f"  [PASS] Found match: {found_matches}")
