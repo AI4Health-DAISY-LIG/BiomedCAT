@@ -158,22 +158,19 @@ class BiomedCATLauncher(tk.Tk):
         try:
             # Importer ici pour éviter les problèmes d'importation circulaire
             from biomedcat.config import Settings
-            from biomedcat.stages.rag_engine import download_model_if_needed
+            from sentence_transformers import SentenceTransformer
             import os
             
             settings = Settings()
             model_name = settings.RAG_embedding_model
-            model_cache_dir = os.path.join(settings.internal_data_path, "models")
-            os.makedirs(model_cache_dir, exist_ok=True)
+            self._write_log(f"Téléchargement du modèle RAG : {model_name}")
             
-            self._write_log(f"Vérification du modèle RAG : {model_name}")
-            local_model_path = download_model_if_needed(model_name, model_cache_dir)
+            # Forcer le téléchargement local via SentenceTransformer
+            # Cela va automatiquement stocker le modèle dans le cache de SentenceTransformers
+            model = SentenceTransformer(model_name)
             
-            if local_model_path:
-                self._write_log(f"✅ Modèle RAG téléchargé localement : {local_model_path}")
-            else:
-                self._write_log(f"⚠️  Impossible de télécharger le modèle RAG : {model_name}")
-                
+            self._write_log(f"✅ Modèle RAG téléchargé localement : {model_name}")
+            
         except Exception as e:
             self._write_log(f"❌ Erreur téléchargement modèle RAG : {str(e)}")
 

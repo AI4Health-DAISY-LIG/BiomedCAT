@@ -14,29 +14,6 @@ import torch
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
 
-def download_model_if_needed(model_name: str, cache_dir: str):
-    """Télécharge le modèle SentenceTransformer s'il n'existe pas déjà."""
-    try:
-        from sentence_transformers import SentenceTransformer
-        import os
-        
-        # Chemin où le modèle sera stocké
-        model_path = os.path.join(cache_dir, model_name.replace("/", "_"))
-        
-        # Si le modèle existe déjà, ne rien faire
-        if os.path.exists(model_path):
-            return model_path
-        
-        # Télécharger le modèle
-        print(f"[*] Téléchargement du modèle {model_name}...")
-        model = SentenceTransformer(model_name)
-        model.save(model_path)
-        print(f"[*] Modèle {model_name} téléchargé et sauvegardé dans {model_path}")
-        return model_path
-    except Exception as e:
-        print(f"[!] Échec du téléchargement du modèle {model_name}: {e}")
-        return None
-
 class BiomedRAG:
     """
     Moteur de recherche hybride (Dense + Sparse) pour le modèle Biolink.
@@ -53,31 +30,12 @@ class BiomedRAG:
         # Bind embedding model                                                                                                                          
         print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
         
-        # Vérifier si le modèle est déjà téléchargé localement
-        model_cache_dir = os.path.join(self.config.internal_data_path, "models")
-        os.makedirs(model_cache_dir, exist_ok=True)
-        local_model_path = download_model_if_needed(self.config.RAG_embedding_model, model_cache_dir)
-
-        if local_model_path:
-            print(f"[*] Utilisation du modèle local: {local_model_path}")
-            # Utiliser directement SentenceTransformer pour le modèle bioclinical-modernbert
-            try:
-                from sentence_transformers import SentenceTransformer
-                self.embedding_model = SentenceTransformer(local_model_path)
-                self.embedding_fn = lambda texts: self.embedding_model.encode(texts, convert_to_numpy=True)
-            except Exception as e:
-                print(f"[!] Erreur chargement modèle SentenceTransformer: {e}")
-                # Fallback vers chromadb
-                self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                    model_name=local_model_path,
-                    device="cuda" if torch.cuda.is_available() else "cpu"
-                )
-        else:
-            print(f"[*] Chargement du modèle distant: {self.config.RAG_embedding_model}")
-            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=self.config.RAG_embedding_model,
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
+        # Utiliser directement l'embedding function de ChromaDB
+        # Elle gérera automatiquement le caching via SentenceTransformers
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=self.config.RAG_embedding_model,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
 
         print("[*] Loading scispaCy model for tokenization...")                                                                                                                            
         try:                                                                                                                                                                               
@@ -221,14 +179,7 @@ class BiomedRAG:
         dense_results = []
         try:
             # Utiliser le modèle directement pour encoder la requête
-            if hasattr(self, 'embedding_model'):
-                query_embedding = self.embedding_model.encode([query], convert_to_numpy=True)
-                query_res = self.collection.query(
-                    query_embeddings=query_embedding.tolist(),
-                    n_results=top_k
-                )
-            else:
-                query_res = self.collection.query(query_texts=[query], n_results=top_k)
+            query_res = self.collection.query(query_texts=[query], n_results=top_k)
             
             # query_res['ids'] est une liste de listes [[id1, id2...]]
             dense_results = query_res['ids'][0] if query_res['ids'] else []
