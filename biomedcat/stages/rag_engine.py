@@ -9,6 +9,7 @@ from rank_bm25 import BM25Okapi
 import re
 import os
 import spacy
+import torch
 
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
@@ -29,8 +30,9 @@ class BiomedRAG:
         # Bind embedding model                                                                                                                          
         print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
         self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(                                                                                                                     
-            model_name=self.config.RAG_embedding_model                                                                                                                                                    
-        )
+            model_name=self.config.RAG_embedding_model,
+            device="cuda" if torch.cuda.is_available() else "cpu")
+
         print("[*] Loading scispaCy model for tokenization...")                                                                                                                            
         try:                                                                                                                                                                               
             self.nlp = spacy.load("en_core_sci_sm")                                                                                                                                        

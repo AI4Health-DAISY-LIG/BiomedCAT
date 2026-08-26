@@ -4,7 +4,6 @@ import subprocess
 import threading
 import os
 import platform
-import webbrowser
 import queue
 import time
 
