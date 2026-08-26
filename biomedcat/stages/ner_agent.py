@@ -239,13 +239,8 @@ class NERAgentPipeline:
                     # Ne pas inclure les mots courants qui ne sont pas des termes biologiques
                     if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can"]:
                         candidates.append(token.text)
-            
-            # Simplified approach: just return all candidates without complex combination logic
-            # This prevents missing valid terms due to overly complex compound detection
-            final_candidates = list(set(candidates))  # Remove duplicates
-            
-            # Filter out very short or obviously non-biological terms
-            final_candidates = [c for c in final_candidates if len(c) >= 2 and not c.isdigit()]
+
+            final_candidates = " ".join(candidates.join)  # Remove duplicates
             
             return final_candidates
         except Exception as e:
