@@ -168,6 +168,9 @@ class BiomedRAG:
         if not self.flat_data:
             return []
 
+        # Tokenize query once and cache it
+        query_tokens = self._tokenize(query)
+
         # --- 1. Recherche Dense (ChromaDB) ---
         dense_results = []
         try:
@@ -180,7 +183,6 @@ class BiomedRAG:
         # --- 2. Recherche Sparse (BM25) ---
         sparse_results = []
         if self.bm25:
-            query_tokens = self._tokenize(query)
             # On récupère les scores pour toutes les classes
             scores = self.bm25.get_scores(query_tokens)
             # On trie les indices par score décroissant
