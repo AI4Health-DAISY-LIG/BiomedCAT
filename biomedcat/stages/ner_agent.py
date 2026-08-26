@@ -144,11 +144,11 @@ class NERAgentPipeline:
                 return False, None, f"Suspicious pattern detected in agent output: {pattern}"
 
         # 2. Extraction et vérification de la Whitelist (Verdict Validation)
-        verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_]+)", response)
+        verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_ ]+)", response)
         if not verdict_match:
             return False, None, "No FINAL_VERDICT found in agent response."
 
-        verint = verdict_match.group(1).strip().upper()
+        verint = verdict_match.group(1).strip()
         if verint not in ENTITY_TYPES:
             return False, None, f"Verdict '{verint}' is not a valid entity type (Whitelist violation)."
 
@@ -214,7 +214,7 @@ class NERAgentPipeline:
             "Biolink Entity Type. You have access to three specialized tools.\n\n"
             "TOOLS:\n"
             "1. lookup_exact_term(term): Use this for specific terms like 'TP53'.\n"
-            "2. semantic_context_scarch(query): Use this for fuzzy concepts or when unsure.\n"
+            "2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.\n"
             "3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings "
             "to verify if a term fits a category.\n\n"
             "PROCESS:\n"
@@ -348,7 +348,7 @@ if __name__ == "__main__":
     if not qa_file.exists():
         print(f"Error: Test file {qa_file} not found.")
     else:
-        with open(qa_for_test := qa_file, "r", encoding="utf-8") as f:
+        with open(qa_file, "r", encoding="utf-8") as f:
             qa_data = json.load(f)
 
         print(f"--- Running QA Data Test ({len(qa_data)} queries) ---")
