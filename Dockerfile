@@ -31,10 +31,6 @@ RUN uv pip install --system \
     pyd  \
     pydantic-settings \
     pydantic \
-    torch \
-    torchvision \
-    torchaudio \
-    transformers \
     pillow \
     pdf2image \
     spacy \

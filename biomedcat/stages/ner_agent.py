@@ -25,12 +25,10 @@ class NERAgentPipeline:
     def __init__(
         self, 
         rag_unseen: BiomedRAG, 
-        extraction_model_id: str, 
         classification_model_id: str,
         sanitization_model_id: str
     ):
         self.rag_engine = rag_unseen
-        self.extraction_model_id = extraction_model_id
         self.classification_model_id = classification_model_id
         self.sanitization_model_id = sanitization_model_id
         self.max_agent_steps = 5  # Limite pour éviter les boucles infinies
@@ -358,7 +356,6 @@ if __name__ == "__main__":
     rag = build_rag()
     agent = NERAgentPipeline(
         rag_unseen=rag,
-        extraction_model_id=settings.extraction_model_id,
         classification_model_id=settings.classification_model_id,
         sanitization_model_id=settings.sanitization_model_id
     )
