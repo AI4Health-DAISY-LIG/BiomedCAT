@@ -7,6 +7,13 @@ from biomedcat.runtime import generate
 from biomedcat.types import Entity, ENTITY_TYPES
 from biomedcat.stages.rag_engine import BiomedRAG
 from biomedcat import prompts
+try:
+    import en_core_sci_sm
+    MODEL_AVAILABLE = True
+except ImportError:
+    MODEL_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("scispaCy model not found. Falling back to basic tokenizer.")
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +162,7 @@ class NERAgentPipeline:
         return True, verint, ""
 
     # ---------------------------------------------------------------------------
-    # TOOLS (Outils exposés à l'agent)
+    # TOOLS
     # ---------------------------------------------------------------------------
 
     def tool_lookup_exact_term(self, term: str) -> str:
@@ -286,9 +293,6 @@ class NERAgentPipeline:
 
         return None
 
-    # ---------------------------------------------------------------------------
-    # PUBLIC API (Integration with Pipeline)
-    # ---------------------------------------------------------------------------
     def extract(self, sentences: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
         all_entities = []
