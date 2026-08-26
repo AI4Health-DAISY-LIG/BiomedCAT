@@ -1,23 +1,43 @@
-[
-
-  {
-    "query": "insulin",
-    "expected_class": "protein"
-  },
-  {
-    "query": "diabetes mellitus",
-    "expected_class": "disease"
-  },
-  {
-    "query": "glucose",
-    "expected_class": "chemical"
-  },
-  {
-    "query": "heart failure",
-    "expected_class": "disease"
-  },  
-  {
-    "query": "CACNA1C",
-    "expected_class": "gene"
-  }
-]
+[                                                                                                                                                                      
+  {                                                                                                                                                                    
+    "query":"heart failure is a damaging disease so as 7,8-didéhydro-4,5-époxy-17-méthylmorphinan-3,6-diol dependence",                                                
+    "expected": [                                                                                                                                                      
+                  {                                                                                                                                                    
+                    "term": "heart failure",                                                                                                                           
+                    "type": "disease"                                                                                                                                  
+                  },                                                                                                                                                   
+                  {                                                                                                                                                    
+                    "term": "7,8-didéhydro-4,5-époxy-17-méthylmorphinan-3,6-diol",                                                                                     
+                    "type": "small molecule"                                                                                                                           
+                  },                                                                                                                                                   
+                  {                                                                                                                                                    
+                    "term": "dependence",                                                                                                                              
+                    "type": "disease or phenotypic feature"                                                                                                            
+                  }                                                                                                                                                    
+                ]                                                                                                                                                      
+  },                                                                                                                                                                   
+  {                                                                                                                                                                    
+    "query": "insulin",                                                                                                                                                
+    "expected": "protein"                                                                                                                                              
+  },                                                                                                                                                                   
+  {                                                                                                                                                                    
+    "query": "diabetes mellitus",                                                                                                                                      
+    "expected": "disease"                                                                                                                                              
+  },                                                                                                                                                                   
+  {                                                                                                                                                                    
+    "query": "glucose",                                                                                                                                                
+    "expected": "chemical"                                                                                                                                             
+  },                                                                                                                                                                   
+  {                                                                                                                                                                    
+    "query": "heart failure",                                                                                                                                          
+    "expected": "disease"                                                                                                                                              
+  },                                                                                                                                                                   
+  {                                                                                                                                                                    
+    "query": "CACNA1C",                                                                                                                                                
+    "expected_class": "gene"                                                                                                                                           
+  },                                                                                                                                                                   
+  {                                                                                                                                                                    
+    "query": "cacna1c",                                                                                                                                                
+    "expected_class": "protein"                                                                                                                                        
+  }                                                                                                                                                                    
+] 
