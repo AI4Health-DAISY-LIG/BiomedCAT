@@ -33,6 +33,7 @@ class NERAgentPipeline:
         self.sanitization_model_id = sanitization_model_id
         self.max_agent_steps = 5  # Limite pour éviter les boucles infinies
         self.MAX_INPUT_LENGTH = 5000
+        self.current_sentence = None  # Pour stocker le contexte courant
         
         # Charger le modèle SpaCy une seule fois
         try:
@@ -168,7 +169,7 @@ class NERAgentPipeline:
     # ---------------------------------------------------------------------------
 
     def tool_lookup_exact_term(self, term: str) -> str:
-        """Recherche directe dans le dictionnaire Biolink."""
+        """Recherche directe dans le dictionnaire Biolink avec contexte."""
         logger.info(f"[Agent Tool] Lookup exact term: {term}")
         flat_data = self.rag_engine.flat_data
         if term in flat_data:
@@ -176,14 +177,18 @@ class NERAgentPipeline:
             return json.dumps({
                 "found": True,
                 "definition": entry["metadata"].get("definition", ""),
+                "contextual_info": f"Term '{term}' found in biomedical context: {self.current_sentence}",
                 "metadata": entry["metadata"]
             }, ensure_ascii=False)
         return json.dumps({"found": False, "message": "Term not found in exact lookup."})
 
     def tool_semantic_context_search(self, query: str) -> str:
-        """Interroges le moteur Hybrid RAG (Dense + Sparse)."""
+        """Interroges le moteur Hybrid RAG (Dense + Sparse) avec contexte."""
         logger.info(f"[Agent Tool] Semantic search: {query}")
-        results = self.rag_engine.search(query, top_k=10) #### TO BE REVIEWED BASED ON TESTING
+        # Ajouter le contexte de la phrase à la requête
+        enhanced_query = f"{query} (context: {self.current_sentence})" if self.current_sentence else query
+        
+        results = self.rag_engine.search(enhanced_query, top_k=10) #### TO BE REVIEWED BASED ON TESTING
         if not results:
             return "No relevant biological classes found."
         
@@ -244,6 +249,7 @@ class NERAgentPipeline:
         return (
             "You are a Biomedical Ontology Agent. Your goal is to classify a term into the correct "
             "Biolink Entity Type. You have access to three specialized tools.\n\n"
+            "CONTEXT: The term must be classified based on its usage within the full sentence context: '{{sentence}}'.\n\n"
             "TOOLS:\n"
             "1. lookup_exact_term(term): Use this for specific terms like 'TP53'.\n"
             "2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.\n"
@@ -265,8 +271,11 @@ class NERAgentPipeline:
         if not is_safe:
             return None
 
+        # Créer le prompt système avec le contexte
+        system_prompt = self._agent_system_prompt().format(sentence=sentence_int)
+        
         messages = [
-            {"role": "system", "content": self._agent_system_prompt()},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Sentence: {sentence_int}\nTerm to classify: {term_clean}"}
         ]
 
@@ -327,7 +336,8 @@ class NERAgentPipeline:
                 continue
             
             logger.info(f"Processing sentence: {sentence[:50]}...")
-
+            self.current_sentence = sentence  # Stocker le contexte
+            
             # 1. Extraction Phase (M1 - Recall) - Utiliser SpaCy au lieu de LLM
             candidates = self._extract_candidates_spacy(sentence)
 
