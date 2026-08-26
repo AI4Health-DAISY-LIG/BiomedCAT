@@ -43,6 +43,31 @@ class NERAgentPipeline:
             logger.warning("scispaCy model not found. Falling back to basic tokenizer.")
             self.nlp = None
 
+    def _filter_and_deduplicate_candidates(self, candidates: List[str]) -> List[str]:
+        """Filters and deduplicates extracted terms based on length and content."""
+        final_candidates = []
+        seen = set()
+        
+        for candidate in candidates:
+            # Ignore words too short or purely numeric
+            if len(candidate) < 2 or candidate.isdigit():
+                continue
+
+            # Check for at least one alphabetic character
+            if not re.search(r'[a-zA-Z]', candidate):
+                continue
+
+            # Regex check for standard biomedical/chemical characters
+            valid_chars = r'^[a-zA-Z0-9\-\.()\[\]_]+$'
+            if re.match(valid_chars, candidate) or re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
+                # Deduplication case-insensitive
+                if candidate.lower() not in seen:
+                    seen.add(candidate.lower())
+                    final_candidates.append(candidate)
+
+        return final_candidates
+
+
     # ---------------------------------------------------------------------------
     # SECURITY (Sentinel, Sanitizer & Output Guard)
     # ---------------------------------------------------------------------------
@@ -62,7 +87,6 @@ class NERAgentPipeline:
             return False, "", ""
 
         # 2. Nettoyage des caractères de contrôle uniquement (Preserve scientific symbols)
-        # On supprime les caractères non-imprimables (0x00-0x1F sauf \n, \r, \t et 0x7F)
         def clean_control_chars(text: str) -> str:
             return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
@@ -70,7 +94,6 @@ class NERAgentPipeline:
         sentence_clean = clean_control_chars(sentence).strip()
 
         # 3. Protection de la structure (Structural Integrity)
-        # Interdiction d'injecter les délimiteurs du prompt ReAct
         forbidden_keywords = ["ACTION:", "FINAL_VERDICT:", "OBSERVATION:"]
         for kw in forbidden_keywords:
             if kw in term_clean.upper() or kw in sentence_clean.upper():
@@ -91,17 +114,13 @@ class NERAgentPipeline:
                 return False, "", ""
 
         # --- PHASE 2: SENTINEL (LlamaGuard) ---
-        
         content = f"Sentence: {sentence_clean}\nTerm: {term_clean}"
         messages = [{"role": "user", "content": content}]
-        
         try:
             response = generate(self.sanitization_model_id, messages, 50, 0).lower()
-            
             if "unsafe" in response:
                 logger.warning(f"[SECURITY ALERT] LlamaGuard flagged input as UNSAFE! Term: '{term_clean}'")
                 return False, "", ""
-            
             return True, term_clean, sentence_clean
         except Exception as e:
             # En cas d'erreur du modèle de sécurité, on adopme une approche "Fail-Closed" (on refuse)
@@ -120,7 +139,6 @@ class NERAgentPipeline:
         # 2. Validation spécifique par outil
         if tool_name == "lookup_exact_term":
             # Autorise uniquement alphanumérique et symboles biologiques de base
-            # On interdit tout ce qui pourrait être interprété comme un chemin ou une commande
             if not re.match(r"^[a-zA-Z0-9\s\+\-\(\)\_\!]+$", arg):
                 return False, "Invalid characters in term. Only alphanumeric and biological symbols allowed."
             return True, ""
@@ -188,7 +206,7 @@ class NERAgentPipeline:
         # Ajouter le contexte de la phrase à la requête
         enhanced_query = f"{query} (context: {self.current_sentence})" if self.current_sentence else query
         
-        results = self.rag_engine.search(enhanced_query, top_k=10) #### TO BE REVIEWED BASED ON TESTING
+        results = self.rag_engine.search(enhanced_query, top_k=10) 
         if not results:
             return "No relevant biological classes found."
         
@@ -218,6 +236,15 @@ class NERAgentPipeline:
         }
         return json.dumps(hierarchy, ensure_ascii=False)
 
+    def _get_tool_executor(self, tool_name: str):
+        """Returns the appropriate executor function for a given tool name."""
+        executors = {
+            "lookup_exact_term": self.tool_lookup_exact_term,
+            "semantic_context_search": self.tool_semantic_context_search,
+            "get_class_hierarchy": self.tool_get_class_hierarchy,
+        }
+        return executors.get(tool_name)
+
     # ---------------------------------------------------------------------------
     # EXTRACTOR WITH MODEL
     # ---------------------------------------------------------------------------
@@ -229,7 +256,6 @@ class NERAgentPipeline:
             return []
             
         try:
-            # Utiliser le modèle de classification pour extraire les termes biologiques
             prompt = f"""
             Extract potential biomedical terms from this sentence. 
             Return only a list of terms, separated by commas. 
@@ -246,110 +272,33 @@ class NERAgentPipeline:
             messages = [{"role": "user", "content": prompt}]
             response = generate(self.classification_model_id, messages, 500, 1.0)
             
-            # Parser la réponse pour extraire les termes
+            # Parser la réponse pour extraire les termes bruts
+            raw_candidates = []
             if "," in response:
-                candidates = [term.strip() for term in response.split(",") if term.strip()]
+                raw_candidates = [term.strip() for term in response.split(",") if term.strip()]
             else:
-                # Si pas de virgules, traiter comme un seul terme ou mot
-                candidates = [response.strip()] if response.strip() else []
+                raw_candidates = [response.strip()] if response.strip() else []
             
-            # Filtrer les candidats pour garder uniquement ceux avec au moins 2 caractères
-            # et qui semblent biologiquement pertinents
-            filtered_candidates = []
-            for candidate in candidates:
-                # Ignorer les mots trop courts ou numériques uniquement
-                if len(candidate) < 2 or candidate.isdigit():
-                    continue
-                    
-                # Vérifier qu'il y a au moins un caractère alphabétique
-                if not re.search(r'[a-zA-Z]', candidate):
-                    continue
-                    
-                # Gérer les caractères spéciaux typiques dans les molécules
-                if re.match(r'^[a-zA-Z0-9\-\.()\[\]_]+$', candidate) or re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
-                    filtered_candidates.append(candidate)
-            
-            # Supprimer les doublons tout en maintenant l'ordre
-            seen = set()
-            final_candidates = []
-            for candidate in filtered_candidates:
-                if candidate.lower() not in seen:
-                    seen.add(candidate.lower())
-                    final_candidates.append(candidate)
-
-            return final_candidates
+            # Use shared utility for filtering and deduplication
+            return self._filter_and_deduplicate_candidates(raw_candidates)
         except Exception as e:
             logger.warning(f"Model-based extraction failed: {e}")
-            # Fallback à l'ancienne méthode si nécessaire
-            return self._extract_candidates_fallback(sentence)
+            # Fallback to the raw spaCy tokens, then apply common filter/dedup
+            raw_fallback = self._get_raw_spaCy_tokens(sentence) 
+            return self._filter_and_deduplicate_candidates(raw_fallback)
 
-    def _extract_candidates_fallback(self, sentence: str) -> List[str]:
-        """Fallback method using spaCy if model-based extraction fails."""
+    def _get_raw_spaCy_tokens(self, sentence: str) -> List[str]:
+        """Helper to return raw SpaCy tokens (pre-filtering/pre-dedup)."""
         if not self.nlp:
-            logger.warning("SpaCy model not available, returning empty list")
             return []
             
         try:
             doc = self.nlp(sentence)
-            candidates = []
-            
-            # Extraire les tokens avec des règles plus souples
-            for token in doc:
-                # Garder les tokens significatifs (noms, noms propres, adjectifs)
-                if token.pos_ in ["NOUN", "PROPN", "ADJ"] and len(token.text) > 2:
-                    # Ne pas inclure les mots courants qui ne sont pas des termes biologiques
-                    if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can"]:
-                        candidates.append(token.text)
-
-            # Filtrer les candidats pour garder uniquement les entités biologiques valides
-            filtered_candidates = []
-            for candidate in candidates:
-                # Ignorer les tokens trop courts ou numériques uniquement
-                if len(candidate) < 2 or candidate.isdigit():
-                    continue
-                    
-                # Vérifier qu'il y a au moins un caractère alphabétique
-                if not re.search(r'[a-zA-Z]', candidate):
-                    continue
-                    
-                # Gérer les caractères spéciaux typiques dans les molécules
-                if re.match(r'^[a-zA-Z0-9\-\.()\[\]_]+$', candidate) or re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
-                    filtered_candidates.append(candidate)
-
-            # Supprimer les doublons tout en maintenant l'ordre
-            seen = set()
-            final_candidates = []
-            for candidate in filtered_candidates:
-                if candidate.lower() not in seen:
-                    seen.add(candidate.lower())
-                    final_candidates.append(candidate)
-
-            return final_candidates
+            raw_candidates = [token.text for token in doc if token.pos_ in ["NOUN", "PROPN", "ADJ"] and len(token.text) > 2]
+            return raw_candidates
         except Exception as e:
-            logger.warning(f"Fallback extraction failed: {e}")
+            logger.warning(f"Raw spaCy extraction failed: {e}")
             return []
-
-    # ---------------------------------------------------------------------------
-    # AGENT CORE LOGIC (ReAct Loop)
-    # ---------------------------------------------------------------------------
-
-    def _agent_system_prompt(self) -> str:
-        return (
-            "You are a Biomedical Ontology Agent. Your goal is to classify a term into the correct "
-            "Biolink Entity Type. You have access to three specialized tools.\n\n"
-            "CONTEXT: The term must be classified based on its usage within the full sentence context: '{{sentence}}'.\n\n"
-            "TOOLS:\n"
-            "1. lookup_exact_term(term): Use this for specific terms like 'TP53'.\n"
-            "2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.\n"
-            "3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings "
-            "to verify if a term fits a category.\n\n"
-            "PROCESS:\n"
-            "For each step, you must output your 'THOUGHT' (reasoning) and then an 'ACTION' in the format:\n"
-            "ACTION: tool_name(argument)\n\n"
-            "When you are certain of the type, end your response with exactly:\n"
-            "FINAL_VERDICT: <TYPE>\n\n"
-            "Available Types: " + ", ".join(ENTITY_TYPES)
-        )
 
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
         """The ReAct loop: Thought -> Action -> Observation."""
@@ -383,30 +332,26 @@ class NERAgentPipeline:
                 logger.warning(f"[SECURITY ALERT] Agent output failed validation: {error_msg}")
                 return None
 
-            # Check for Action call
             action_match = re.search(r"ACTION:\s*(\w+)\((.*)\)", response)
             if action_match:
                 tool_name = action_match.group(1)
                 arg_str = action_match.group(2).strip().strip("'").strip('"')
-                
+
                 # --- SANDBOXING LAYER: Argument Validation ---
                 is_valid, error_msg = self._validate_tool_argument(tool_name, arg_str)
                 if not is_valid:
                     observation = f"Error: {error_msg}"
                     logger.warning(f"[SECURITY ALERT] Agent attempted invalid tool call: {tool_name}({arg_str}) -> {error_msg}")
                 else:
-                    # Proceed with execution only if valid
-                    try:
-                        if tool_name == "lookup_exact_term":
-                            observation = self.tool_lookup_exact_term(arg_str)
-                        elif tool_name == "semantic_context_search":
-                            observation = self.tool_semantic_context_search(arg_str)
-                        elif tool_name == "get_class_hierarchy":
-                            observation = self.tool_get_class_hierarchy(arg_str)
-                        else:
-                            observation = f"Error: Unknown tool {tool_name}"
-                    except Exception as e:
-                        observation = f"Error executing tool: {str(e)}"
+                    # --- TOOL EXECUTION DELEGATION ---
+                    executor = self._get_tool_executor(tool_name)
+                    if executor:
+                        try:
+                            observation = executor(arg_str) 
+                        except Exception as e:
+                            observation = f"Error executing tool: {str(e)}"
+                    else:
+                        observation = f"Error: Unknown tool {tool_name}"
 
                 messages.append({"role": "user", "annotated_content": f"OBSERVATION: {observation}"})
             else:
@@ -426,7 +371,7 @@ class NERAgentPipeline:
             logger.info(f"Processing sentence: {sentence[:50]}...")
             self.current_sentence = sentence  # Stocker le contexte
             
-            # 1. Extraction Phase (M1 - Recall) - Utiliser le modèle de classification
+            # 1. Extraction Phase (M1 - Recall)
             candidates = self._extract_candidates_model(sentence)
 
             if not candidates:
@@ -434,10 +379,6 @@ class NERAgentPipeline:
 
             # 2. Agentic Classification & Verification Phase (M2)
             for term in candidates:
-                # Vérifier si le terme est trop court ou invalide
-                if len(term.strip()) < 2:
-                    continue
-                    
                 final_type = self._run_agentic_loop(term, sentence)
                 
                 if final_type:
@@ -513,3 +454,4 @@ if __name__ == "__main__":
         print(f"Passed:        {passed}")
         print(f"Failed:        {failed}")
         print("="*30)
+
