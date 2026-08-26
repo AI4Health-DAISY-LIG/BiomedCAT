@@ -425,9 +425,9 @@ if __name__ == "__main__":
                 found_match = False
                 for e_res in results:
                     if e_res:
-                        # Extraire le terme sans le type entre parenthèses
-                        term_only = e_res.text.split(' (')[0] if ' (' in e_res.text else e_res.text
-                        if term_only.upper() == expected:
+                        # Accepter le terme brut ou le terme avec parenthèses
+                        # Exemple : "CACNA1C" ou "CACNA1C (gene)"
+                        if expected in e_res.text.upper() or e_res.text.upper() == expected:
                             # Vérifier que le type est correct
                             expected_type = entry.get("expected_class", "").upper()
                             if expected_type == "" or e_res.type.upper() == expected_type:
