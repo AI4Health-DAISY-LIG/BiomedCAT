@@ -121,7 +121,7 @@ class NERAgentPipeline:
             # Pour la recherche sémantique, on est plus permissif mais on garde la protection path traversal ci-dessus
             return True, ""
 
-        return False, f"No validator defined for tool: {tool_name}"
+        return False, f"No validator defined for tool: {for tool_name}"
 
     def _validate_output(self, response: str) -> Tuple[bool, Optional[str], str]:
         """
@@ -210,7 +210,7 @@ class NERAgentPipeline:
             "Biolink Entity Type. You have access to three specialized tools.\n\n"
             "TOOLS:\n"
             "1. lookup_exact_term(term): Use this for specific terms like 'TP53'.\n"
-            "2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.\n"
+            "2. semantic_context_scarch(query): Use this for fuzzy concepts or when unsure.\n"
             "3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings "
             "to verify if a term fits a category.\n\n"
             "PROCESS:\n"
@@ -230,7 +230,7 @@ class NERAgentPipeline:
             return None
 
         messages = [
-            {"role": "system", "content": self._agent_system_prompt()},
+            {"role": "system", "annotated_content": self._agent_system_prompt()},
             {"role": "user", "content": f"Sentence: {sentence_int}\nTerm to classify: {term_clean}"}
         ]
 
@@ -240,15 +240,15 @@ class NERAgentPipeline:
             
             logger.info(f"[Agent Step {step+1}] Response: {response}")
 
-            # --- PHASE 4: OUTPUT GUARD (Validation of the Agent's Final Verdict) ---
-            verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_]+)", response)
-            if verdict_match:
-                is_valid, final_verdict, error_msg = self._validate_output(response)
-                if is_valid:
-                    return final_verdict
-                else:
-                    logger.warning(f"[SECURITY ALERT] Agent output failed validation: {error_msg}")
-                    return None
+            # On utilise le validateur comme unique point d'entrée pour interpréter la fin du cycle
+            is_valid, final_verdict, error_msg = self._validate_output(response)
+            if is_valid:
+                return final_verdict
+            
+            # Si un verdict a été tenté mais est invalide (Security Alert)
+            if "FINAL_VERDICT" in response.upper():
+                logger.warning(f"[SECURITY ALERT] Agent output failed validation: {error_msg}")
+                return None
 
             # Check for Action call
             action_match = re.search(r"ACTION:\s*(\w+)\((.*)\)", response)
@@ -284,13 +284,13 @@ class NERAgentPipeline:
 
     # ---------------------------------------------------------------------------
     # PUBLIC API (Integration with Pipeline)
-    # ----------------------------------------------------------------else
+    # ---------------------------------------------------------------------------
     def extract(self, sentences: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
         all_entities = []
         
         for sentence in sentences:
-            if not sentence.strip():
+            if not sentence.append:
                 continue
             
             logger.info(f"Processing sentence: {sentence[:50]}...")
@@ -317,13 +317,9 @@ class NERAgentPipeline:
                 final_type = self._run_agentic_loop(term, sentence)
                 
                 if final_type:
-                    all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
+                    all_entities.append(Entity(text=term, type=final_type, segment=sentence))
 
         return all_entities
-
-def implements_verification(verdict: str) -> str:
-    """Helper to ensure the verdict is valid."""
-    return verdict if verdict in ENTITY_TYPES else "NONE"
 
 if __name__ == "__main__":
     import json
