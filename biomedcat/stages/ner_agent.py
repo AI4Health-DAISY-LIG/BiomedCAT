@@ -9,7 +9,7 @@ from spacy.lang.en import English
 from biomedcat.runtime import generate
 from biomedcat.types import Entity, ENTITY_TYPES
 from biomedcat.stages.rag_engine import BiomedRAG
-from biomedcat import prompts
+# from biomedcat import prompts
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ class NERAgentPipeline:
     # ---------------------------------------------------------------------------
 
     def _extract_candidates_spacy(self, sentence: str) -> List[str]:
-        """Extraire les candidats avec en_core_sci_sm en conservant la flexibilité."""
+        """Extraire les candidats avec en_core_sci_sm en conservant la flexibilité pour garder les compounds words together."""
         if not self.nlp:
             logger.warning("SpaCy model not available, falling back to basic extraction")
             return []
