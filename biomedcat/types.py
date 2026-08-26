@@ -28,7 +28,7 @@ ENTITY_TYPES: list[str] = list(biolink_info_flat.keys())
 #     "ANATOMY", "CHROMOSOMAL_LOCUS", "EPIGENETIC_MODIFICATION",
 # ]
 
-TYPE_DEFINITIONS: dict[str, str] = {k:v["definition"] for k,v in biolink_info_flat.items()}
+TYPE_DEFINITIONS: dict[str, str] = {k:v["metadata"]["definition"] for k,v in biolink_info_flat.items()}
 # {
 #     "GENE":                    "a gene or gene symbol",
 #     "DISEASE":                 "a disease or disorder",
