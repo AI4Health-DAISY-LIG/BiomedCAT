@@ -10,6 +10,10 @@ from biomedcat import prompts
 
 logger = logging.getLogger(__name__)
 
+def implements_verification(verdict: str) -> str:
+    """Helper to ensure the verdict is valid."""
+    return verdict if verdict in ENTITY_TYPES else "NONE"
+
 class NERAgentPipeline:
     """
     Pipeline NER Agentique utilisant le pattern ReAct (Reasoning + Acting).
@@ -121,7 +125,7 @@ class NERAgentPipeline:
             # Pour la recherche sémantique, on est plus permissif mais on garde la protection path traversal ci-dessus
             return True, ""
 
-        return False, f"No validator defined for tool: {for tool_name}"
+        return False, f"No validator defined for tool: {tool_name}"
 
     def _validate_output(self, response: str) -> Tuple[bool, Optional[str], str]:
         """
@@ -230,7 +234,7 @@ class NERAgentPipeline:
             return None
 
         messages = [
-            {"role": "system", "annotated_content": self._agent_system_prompt()},
+            {"role": "system", "content": self._agent_system_prompt()},
             {"role": "user", "content": f"Sentence: {sentence_int}\nTerm to classify: {term_clean}"}
         ]
 
@@ -290,7 +294,7 @@ class NERAgentPipeline:
         all_entities = []
         
         for sentence in sentences:
-            if not sentence.append:
+            if not sentence.strip():
                 continue
             
             logger.info(f"Processing sentence: {sentence[:50]}...")
@@ -317,7 +321,7 @@ class NERAgentPipeline:
                 final_type = self._run_agentic_loop(term, sentence)
                 
                 if final_type:
-                    all_entities.append(Entity(text=term, type=final_type, segment=sentence))
+                    all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
 
         return all_entities
 
