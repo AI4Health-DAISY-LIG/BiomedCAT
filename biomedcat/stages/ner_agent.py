@@ -240,9 +240,28 @@ class NERAgentPipeline:
                     if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to"]:
                         candidates.append(token.text)
             
-            # Pour les termes composés, on laisse les tokens individuels
-            # Le pipeline d'agent gère la classification correcte
-            return list(set(candidates))  # Remove duplicates
+            # Pour les termes composés, on va essayer de les regrouper intelligemment
+            # Mais garder une approche simple : ne pas diviser les termes qui sont dans le dictionnaire
+            final_candidates = []
+            i = 0
+            while i < len(candidates):
+                # Essayer de construire des termes composés à partir de plusieurs tokens
+                # Si on peut trouver un terme composé dans le dictionnaire, on le prend
+                found_compound = False
+                # Tester les combinaisons de 1 à 3 tokens
+                for length in range(min(3, len(candidates) - i), 0, -1):
+                    combined = " ".join(candidates[i:i+length])
+                    if combined.lower() in self.rag_engine.flat_data:
+                        final_candidates.append(combined)
+                        i += length
+                        found_compound = True
+                        break
+                
+                if not found_compound:
+                    final_candidates.append(candidates[i])
+                    i += 1
+                    
+            return list(set(final_candidates))  # Remove duplicates
         except Exception as e:
             logger.warning(f"SpaCy extraction failed: {e}")
             return []
