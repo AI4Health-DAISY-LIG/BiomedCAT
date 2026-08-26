@@ -14,7 +14,13 @@ from biomedcat.runtime import generate   # importing runtime bootstraps CUDA/det
 from biomedcat.types import Entity, ENTITY_TYPES
 from biomedcat import prompts
 from biomedcat.config import settings
-import en_core_sci_sm
+try:
+    import en_core_sci_sm
+    MODEL_AVAILABLE = True
+except ImportError:
+    MODEL_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("scispaCy model not found. Falling back to basic tokenizer.")
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +29,20 @@ _nlp = None   # scispaCy pipeline, loaded once (CPU) and reused across calls
 
 
 def _get_nlp():
-    """Load and cache the scimspaCy model, used here for sentence segmentation only."""
+    """Load and cache the scispaCy model, used here for sentence segmentation only."""
     global _nlp
     if _nlp is None:
-        _nlp = en_core_sci_sm.load()
+        if MODEL_AVAILABLE:
+            try:
+                _nlp = en_core_sci_sm.load()
+                logger.info("Successfully loaded scispaCy model")
+            except Exception as e:
+                logger.error(f"Failed to load scispaCy model: {e}")
+                logger.warning("Falling back to basic tokenizer")
+                _nlp = None
+        else:
+            logger.warning("scispaCy model not available. Falling back to basic tokenizer.")
+            _nlp = None
     return _nlp
 
 
