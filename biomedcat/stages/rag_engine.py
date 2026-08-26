@@ -11,6 +11,11 @@ import os
 import spacy
 import torch
 
+# Désactiver les logs HTTP de huggingface_hub et httpx
+import logging
+logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
 
