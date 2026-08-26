@@ -91,7 +91,7 @@ class NERAgentPipeline:
             return True, term_clean, sentence_clean
         except Exception as e:
             # En cas d'erreur du modèle de sécurité, on adopme une approche "Fail-Closed" (on refuse)
-            logger.error(f"[SECURITY ERROR] Error during sanitization: {api_error := e}")
+            logger.error(f"[SECURITY ERROR] Error during sanitization: {e}")
             return False, "", ""
 
     def _validate_tool_argument(self, tool_name: str, arg: str) -> Tuple[bool, str]:
