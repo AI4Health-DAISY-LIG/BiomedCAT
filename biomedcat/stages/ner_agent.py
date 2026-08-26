@@ -231,17 +231,20 @@ class NERAgentPipeline:
         try:
             # Utiliser le modèle de classification pour extraire les termes biologiques
             prompt = f"""
-            Extract potential biomedical terms from this sentence. Return only a list of terms, 
-            separated by commas. Focus on meaningful biological entities (genes, proteins, diseases, 
-            chemicals, pathways, etc.). Ignore common words like "the", "and", "with", etc.
-            
+            Extract potential biomedical terms from this sentence. 
+            Return only a list of terms, separated by commas. 
+            Terms can be made of one or more words.                       
+            Give advantage to compound terms: when you have a doubt between a candidate term of 2 words and 2 candidates of 1 word, ALWAYS choose the 2-word candidate term.       
+            Ignore common words such as "the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does",   
+            "did", "will", "would", "could", "should", "may", "might", "must", "can".                                                                                                                                                                
+                        
             Sentence: "{sentence}"
             
             Terms (comma-separated):
             """
             
             messages = [{"role": "user", "content": prompt}]
-            response = generate(self.classification_model_id, messages, 200, 0.0)
+            response = generate(self.classification_model_id, messages, 500, 1.0)
             
             # Parser la réponse pour extraire les termes
             if "," in response:
