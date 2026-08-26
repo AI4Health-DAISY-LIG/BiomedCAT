@@ -6,6 +6,7 @@ import os
 import platform
 import queue
 import time
+from biomedcat.config import Settings
 
 class BiomedCATLauncher(tk.Tk):
     def __init__(self):
@@ -117,13 +118,12 @@ class BiomedCATLauncher(tk.Tk):
     def check_ollama_model(self):
         """Vérifie si les modèles Ollama sont téléchargés, sinon lance les pulls."""
         self._write_log("Vérification des modèles Ollama...")
-        
         # Liste de tous les modèles nécessaires
         required_models = [
-            self.model_name,  # "llama3.1"
-            "gemma4:e4b-it-qat",  # classification_model_id
-            "llama-guard3:8b",    # sanitization_model_id
-            "qwen2.5vl:7b"        # ocr_model_id
+            Settings.ocr_model_id,  
+            Settings.RAG_embedding_model,
+            Settings.classification_model_id,
+            Settings.sanitization_model_id
         ]
         
         try:
