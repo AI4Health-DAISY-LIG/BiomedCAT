@@ -60,10 +60,18 @@ class BiomedRAG:
 
         if local_model_path:
             print(f"[*] Utilisation du modèle local: {local_model_path}")
-            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=local_model_path,
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            )
+            # Utiliser directement SentenceTransformer pour le modèle bioclinical-modernbert
+            try:
+                from sentence_transformers import SentenceTransformer
+                self.embedding_model = SentenceTransformer(local_model_path)
+                self.embedding_fn = lambda texts: self.embedding_model.encode(texts, convert_to_numpy=True)
+            except Exception as e:
+                print(f"[!] Erreur chargement modèle SentenceTransformer: {e}")
+                # Fallback vers chromadb
+                self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                    model_name=local_model_path,
+                    device="cuda" if torch.cuda.is_available() else "cpu"
+                )
         else:
             print(f"[*] Chargement du modèle distant: {self.config.RAG_embedding_model}")
             self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -185,12 +193,6 @@ class BiomedRAG:
             dense_documents.append(doc_text)
             dense_metadatas.append(entry["metadata"])
 
-            # 2. Préparation pour l'index Sparse (BM25)
-            # On crée un corpus textuel basé sur la définition et les exemples pour le matching mot-clé
-            meta = entry["metadata"]
-            definition = meta.get("definition", "")
-            examples_text = " ".join(meta.get("examples", []))
-
         # Injection dans ChromaDB
         if dense_ids:
             self.collection.add(
@@ -214,7 +216,16 @@ class BiomedRAG:
         # --- 1. Recherche Dense (ChromaDB) ---
         dense_results = []
         try:
-            query_res = self.collection.query(query_texts=[query], n_results=top_k)
+            # Utiliser le modèle directement pour encoder la requête
+            if hasattr(self, 'embedding_model'):
+                query_embedding = self.embedding_model.encode([query], convert_to_numpy=True)
+                query_res = self.collection.query(
+                    query_embeddings=query_embedding.tolist(),
+                    n_results=top_k
+                )
+            else:
+                query_res = self.collection.query(query_texts=[query], n_results=top_k)
+            
             # query_res['ids'] est une liste de listes [[id1, id2...]]
             dense_results = query_res['ids'][0] if query_res['ids'] else []
         except Exception as e:
