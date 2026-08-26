@@ -219,13 +219,71 @@ class NERAgentPipeline:
         return json.dumps(hierarchy, ensure_ascii=False)
 
     # ---------------------------------------------------------------------------
-    # EXTRACTOR WITH SPACY
+    # EXTRACTOR WITH MODEL
     # ---------------------------------------------------------------------------
 
-    def _extract_candidates_spacy(self, sentence: str) -> List[str]:
-        """Extraire les candidats avec en_core_sci_sm en conservant les termes composés."""
+    def _extract_candidates_model(self, sentence: str) -> List[str]:
+        """Extraire les candidats biologiques avec le modèle de classification."""
+        if not self.classification_model_id:
+            logger.warning("Classification model ID not available, falling back to basic extraction")
+            return []
+            
+        try:
+            # Utiliser le modèle de classification pour extraire les termes biologiques
+            prompt = f"""
+            Extract potential biomedical terms from this sentence. Return only a list of terms, 
+            separated by commas. Focus on meaningful biological entities (genes, proteins, diseases, 
+            chemicals, pathways, etc.). Ignore common words like "the", "and", "with", etc.
+            
+            Sentence: "{sentence}"
+            
+            Terms (comma-separated):
+            """
+            
+            messages = [{"role": "user", "content": prompt}]
+            response = generate(self.classification_model_id, messages, 200, 0.0)
+            
+            # Parser la réponse pour extraire les termes
+            if "," in response:
+                candidates = [term.strip() for term in response.split(",") if term.strip()]
+            else:
+                # Si pas de virgules, traiter comme un seul terme ou mot
+                candidates = [response.strip()] if response.strip() else []
+            
+            # Filtrer les candidats pour garder uniquement ceux avec au moins 2 caractères
+            # et qui semblent biologiquement pertinents
+            filtered_candidates = []
+            for candidate in candidates:
+                # Ignorer les mots trop courts ou numériques uniquement
+                if len(candidate) < 2 or candidate.isdigit():
+                    continue
+                    
+                # Vérifier qu'il y a au moins un caractère alphabétique
+                if not re.search(r'[a-zA-Z]', candidate):
+                    continue
+                    
+                # Gérer les caractères spéciaux typiques dans les molécules
+                if re.match(r'^[a-zA-Z0-9\-\.()\[\]_]+$', candidate) or re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
+                    filtered_candidates.append(candidate)
+            
+            # Supprimer les doublons tout en maintenant l'ordre
+            seen = set()
+            final_candidates = []
+            for candidate in filtered_candidates:
+                if candidate.lower() not in seen:
+                    seen.add(candidate.lower())
+                    final_candidates.append(candidate)
+
+            return final_candidates
+        except Exception as e:
+            logger.warning(f"Model-based extraction failed: {e}")
+            # Fallback à l'ancienne méthode si nécessaire
+            return self._extract_candidates_fallback(sentence)
+
+    def _extract_candidates_fallback(self, sentence: str) -> List[str]:
+        """Fallback method using spaCy if model-based extraction fails."""
         if not self.nlp:
-            logger.warning("SpaCy model not available, falling back to basic extraction")
+            logger.warning("SpaCy model not available, returning empty list")
             return []
             
         try:
@@ -240,36 +298,9 @@ class NERAgentPipeline:
                     if token.text.lower() not in ["the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can"]:
                         candidates.append(token.text)
 
-            # Post-traitement pour identifier les termes composés
-            # Regrouper les tokens proches pour former des termes plus longs
-            compound_candidates = []
-            i = 0
-            while i < len(candidates):
-                # Vérifier si le token actuel est un préfixe de composé chimique
-                if i < len(candidates) - 1:
-                    # Exemple : "7,8-didéhydro" + "4,5-époxy" = "7,8-didéhydro-4,5-époxy"
-                    current = candidates[i]
-                    next_token = candidates[i + 1]
-                    
-                    # Si le token suivant commence par un tiret ou contient des caractères spéciaux
-                    # et que le courant est un nombre ou une abréviation, on les combine
-                    if (current.replace('-', '').replace(',', '').isdigit() or 
-                        re.match(r'^[A-Z][a-z]*$', current) or
-                        len(current) > 3) and \
-                       (next_token.startswith('-') or 
-                        re.search(r'[0-9][\-–—][0-9]', next_token) or
-                        re.search(r'[0-9][A-Z]', next_token)):
-                        combined = current + "-" + next_token
-                        compound_candidates.append(combined)
-                        i += 2
-                        continue
-                
-                compound_candidates.append(candidates[i])
-                i += 1
-
             # Filtrer les candidats pour garder uniquement les entités biologiques valides
             filtered_candidates = []
-            for candidate in compound_candidates:
+            for candidate in candidates:
                 # Ignorer les tokens trop courts ou numériques uniquement
                 if len(candidate) < 2 or candidate.isdigit():
                     continue
@@ -279,13 +310,8 @@ class NERAgentPipeline:
                     continue
                     
                 # Gérer les caractères spéciaux typiques dans les molécules
-                # Permettre les tirets, points, parenthèses, chiffres, lettres
-                if re.match(r'^[a-zA-Z0-9\-\.()\[\]_]+$', candidate):
+                if re.match(r'^[a-zA-Z0-9\-\.()\[\]_]+$', candidate) or re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
                     filtered_candidates.append(candidate)
-                else:
-                    # Pour les cas spéciaux avec caractères accentués ou autres
-                    if re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
-                        filtered_candidates.append(candidate)
 
             # Supprimer les doublons tout en maintenant l'ordre
             seen = set()
@@ -297,7 +323,7 @@ class NERAgentPipeline:
 
             return final_candidates
         except Exception as e:
-            logger.warning(f"SpaCy extraction failed: {e}")
+            logger.warning(f"Fallback extraction failed: {e}")
             return []
 
     # ---------------------------------------------------------------------------
@@ -397,8 +423,8 @@ class NERAgentPipeline:
             logger.info(f"Processing sentence: {sentence[:50]}...")
             self.current_sentence = sentence  # Stocker le contexte
             
-            # 1. Extraction Phase (M1 - Recall) - Utiliser SpaCy au lieu de LLM
-            candidates = self._extract_candidates_spacy(sentence)
+            # 1. Extraction Phase (M1 - Recall) - Utiliser le modèle de classification
+            candidates = self._extract_candidates_model(sentence)
 
             if not candidates:
                 continue
