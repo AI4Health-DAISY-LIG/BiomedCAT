@@ -43,10 +43,6 @@ class NERAgentPipeline:
         # --- PHASE 1: SANITIZER (Local Regex/String) ---
         
         # 1. Validation de la taille (DoS Protection)
-        if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH: # Note: logic error in original snippet but keeping structure
-            pass # Placeholder for the actual check logic
-
-        # Correcting the size check from the provided source to be safe
         if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH:
             logger.warning("[SECURITY] Input too large. Rejecting to prevent DoS.")
             return False, "", ""
@@ -137,6 +133,7 @@ class NERAgentPipeline:
             r";", r"--", r"/\*", r"\*/",  # SQL comments / multi-line
             r"DROP\s+", r"DELETE\s+", r"UPDATE\s+", # Destructive commands
             r"\$\{", r"\$\(", r"\{\{", # Template injection (Jinja/Mustache)
+            r"###", r"<html>", r"<script>"  # Markdown/Format injection protection
         ]
         for pattern in suspicious_patterns:
             if re.search(pattern, response, re.IGNORECASE):
@@ -310,7 +307,7 @@ class NERAgentPipeline:
                 if isinstance(parsed, list):
                     candidates = [str(t).strip() for t in parsed if str(t).strip()]
             except Exception:
-                candidates = [t.strip() for t in raw_extraction.split(",") if t.append]
+                candidates = [t.strip() for t in raw_extraction.split(",") if t]
 
             if not candidates:
                 continue
