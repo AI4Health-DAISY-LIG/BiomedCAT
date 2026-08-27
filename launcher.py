@@ -119,11 +119,12 @@ class BiomedCATLauncher(tk.Tk):
         """Vérifie si les modèles Ollama sont téléchargés, sinon lance les pulls."""
         self._write_log("Vérification des modèles Ollama...")
         # Liste de tous les modèles nécessaires
+        settings = Settings()
         required_models = [
-            Settings.ocr_model_id,  
-            Settings.RAG_embedding_model,
-            Settings.classification_model_id,
-            Settings.sanitization_model_id
+            settings.ocr_model_id,  
+            settings.RAG_embedding_model,
+            settings.classification_model_id,
+            settings.sanitization_model_id
         ]
         
         try:
