@@ -37,10 +37,9 @@ class Settings:
         # Map task models to the default main model
         # self.ocr_model_id = os.getenv("OCR_MODEL_ID", "zai-org/GLM-OCR")
         self.ocr_model_id = os.getenv("OCR_MODEL_ID","qwen2.5vl:7b")
-        self.RAG_embedding_model = os.getenv("EMBEDDINGS_MODEL_ID", "neuml/bioclinical-modernbert-base-embeddings")
-        self.extraction_model_id = os.getenv("EXTRACTION_MODEL_ID", "llama3:8b")
+        self.RAG_embedding_model = os.getenv("EMBEDDINGS_MODEL_ID", "NeuML/bioclinical-modernbert-base-embeddings")
         self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
-        self.sanitization_model_id = os.getenv("SANITIZATION_MODEL_ID", "llama-guard3:8b")
+        self.sanitization_model_id = os.getenv("SANITIZATION_MODEL_ID", "llama-guard3:1b")
         # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
 
         # Resolver service URLs (configure via environment if needed)
