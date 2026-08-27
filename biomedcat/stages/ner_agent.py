@@ -208,7 +208,7 @@ class NERAgentPipeline:
         
         results = self.rag_engine.search(enhanced_query, top_k=10) 
         if not results:
-            return "No relevant biological classes found."
+            return "No relevant biomedical classes found."
         
         context_parts = []
         for res_id in results:
@@ -259,22 +259,22 @@ class NERAgentPipeline:
             # Prompt simplifié et plus clair
             prompt = f"""Extract biomedical terms from this sentence: "{sentence}"
             
-            Return ONLY a comma-separated list of terms. 
-            Examples: "insulin, diabetes, heart failure"
+            Return ONLY a pipe-separated list of terms. 
+            Examples: "insulin|diabetes|heart failure"
             Do NOT include any explanation or extra text.
-            Focus on meaningful biological entities (genes, proteins, diseases, chemicals, etc.)
-            For compound terms like "7,8-didéhydro-4,5-époxy-17-méthylmorphinan-3,6-diol", keep them together.
+            Focus on ANY biological entities independently of their information content.
+            For compound terms like "(2R)-2-aminopropanoic acid", keep them together.
             Ignore common words like "the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can".
-            
-            Terms (comma-separated): """
+
+            Terms (pipe separated): """
             
             messages = [{"role": "user", "content": prompt}]
             response = generate(self.classification_model_id, messages, 500, 0.0)
             
             # Parser la réponse pour extraire les termes bruts
             raw_candidates = []
-            if response and "," in response:
-                raw_candidates = [term.strip() for term in response.split(",") if term.strip()]
+            if response and "|" in response:
+                raw_candidates = [term.strip() for term in response.split("|") if term.strip()]
             elif response:
                 raw_candidates = [response.strip()]
             
@@ -299,6 +299,33 @@ class NERAgentPipeline:
             logger.warning(f"Raw spaCy extraction failed: {e}")
             return []
 
+    # ---------------------------------------------------------------------------
+    # AGENT CORE LOGIC (ReAct Loop)
+    # ---------------------------------------------------------------------------
+
+    def _agent_system_prompt(self) -> str:
+        return (
+            "You are a Biomedical Ontology Agent. Your goal is to classify a term into the correct "
+            "Biolink Entity Type. \n\n"
+            "For terms with multiple words, you may need to break it down into two different concepts "
+            "to capture the most information content. For example alcohol dependence will be translated "
+            "into : alcohol (small molecule) and dependence (disease).\n\n"
+            "If the term is a verb, transform it into a noun. For example, 'treats' will be transformed "
+            "into treatment and keep it ONLY if it has high informative content.\n\n"
+            " You have access to three specialized tools.\n\n"
+            "TOOLS:\n"
+            "1. lookup_exact_term(term): Use this for specific terms like 'TP53'.\n"
+            "2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.\n"
+            "3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings "
+            "to verify if a term fits a category.\n\n"
+            "PROCESS:\n"
+            "For each step, you must output your 'THOUGHT' (reasoning) and then an 'ACTION' in the format:\n"
+            "ACTION: tool_name(argument)\n\n"
+            "When you are certain of the type, end your response with exactly:\n"
+            "FINAL_VERDICT: <TYPE>\n\n"
+            "Available Types: " + ", ".join(ENTITY_TYPES)
+        )
+
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
         """The ReAct loop: Thought -> Action -> Observation."""
         
@@ -316,7 +343,7 @@ class NERAgentPipeline:
         ]
 
         for step in range(self.max_agent_steps):
-            response = generate(self.classification_model_id, messages, 1024, 0)
+            response = generate(self.classification_model_id, messages, 5000, 0)
             messages.append({"role": "assistant", "content": response})
             
             logger.info(f"[Agent Step {step+1}] Response: {response}")
@@ -367,7 +394,7 @@ class NERAgentPipeline:
             if not sentence.strip():
                 continue
             
-            logger.info(f"Processing sentence: {sentence[:50]}...")
+            logger.info(f"Processing sentence: {sentence[:100]}...")
             self.current_sentence = sentence  # Stocker le contexte
             
             # 1. Extraction Phase (M1 - Recall)
