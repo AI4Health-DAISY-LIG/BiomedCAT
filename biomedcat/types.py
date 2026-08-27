@@ -12,4 +12,47 @@ if BIOLINK_FILE_PATH.is_file():
     # checks if file exists
     print ("Loading biolink info...")
     with open(str(BIOLINK_FILE_PATH)) as json_data:
-        biolink_info_flat
+        biolink_info_flat = json.load(json_data)
+else:
+    print ("Loading state of the art data model and computing local knowledge base...")
+    nested_result, biolink_info_flat = biolink_yml_processor()
+    print("biolink data model processing... done.")
+
+
+# The seven biomedical entity types an Entity.type can hold, and one gloss each.
+# Single source of truth shared by NER (typing), the prompts, and Norm (the judge),
+# so those never drift on what a type label means. Kept here (torch-free) rather than
+# in runtime, so any module can import the vocabulary without pulling in torch.
+ENTITY_TYPES: list[str] = list(biolink_info_flat.keys())
+
+TYPE_DEFINITIONS: dict[str, str] = {k:v["metadata"]["definition"] for k,v in biolink_info_flat.items()}
+
+@dataclass
+class Slide:
+    page: int
+    text: str
+
+@dataclass
+class Entity:
+    text: str
+    type: str
+    segment: str
+
+@dataclass
+class Candidate:
+    curie: str
+    label: str
+    biolink_type: str | None
+    rank: int
+    source: str
+
+@dataclass
+class NormalizedEntity(Entity):
+    curie: str | None = None
+
+@dataclass
+class PipelineResult:
+    filename: str
+    ocr: list[Slide]
+    ner: list[Entity]
+    norm: list[NormalizedEntity]
