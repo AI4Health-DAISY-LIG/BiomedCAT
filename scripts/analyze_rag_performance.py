@@ -185,14 +185,14 @@ class RAGAnalyzer:
         assumption explicit and handles a few common formats.
         """
 
-        if results is None: return []
+        if results is None: 
+            return []
 
         # Dictionary result:
-
-        if isinstance(results,dict): return list(results.keys())
+        if isinstance(results,dict): 
+            return list(results.keys())
 
         # List / tuple / set:
-
         if isinstance(results,(list, tuple, set)): 
             normalized = []
 
@@ -220,11 +220,8 @@ class RAGAnalyzer:
         """
 
         raw_results = (self.rag_engine.search(query, top_k=k))
-
         results = self._normalize_results(raw_results)
-
-        # Remove duplicates while preserving ranking.
-        ranked_results = list(dict.fromkeys(results))
+        ranked_results = list(dict.fromkeys(results)) # Remove duplicates while preserving ranking
 
         # Exact rank:
         exact_rank = None
@@ -233,8 +230,7 @@ class RAGAnalyzer:
                 exact_rank = rank
                 break
 
-        exact_hit = (exact_rank is not None
-            and exact_rank <= k)
+        exact_hit = (exact_rank is not None and exact_rank <= k)
 
         # Ancestor retrieval:
         ancestors = self.get_ancestors(expected)
@@ -514,6 +510,7 @@ if __name__ == "__main__":
 
         analyzer = RAGAnalyzer(rag_engine=engine,nested_data=nested_structure,)
         analyzer.analyze()
+        print('bob')
 
     except Exception as e:
         print(f"[!] Analysis failed: {e}")
