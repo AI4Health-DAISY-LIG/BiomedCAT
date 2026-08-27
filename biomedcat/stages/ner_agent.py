@@ -270,7 +270,7 @@ class NERAgentPipeline:
             """
             
             messages = [{"role": "user", "content": prompt}]
-            response = generate(self.classification_model_id, messages, 500, 1.0)
+            response = generate(self.classification_model_id, messages, 500, 0.0)
             
             # Parser la réponse pour extraire les termes bruts
             raw_candidates = []
