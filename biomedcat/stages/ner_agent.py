@@ -256,28 +256,27 @@ class NERAgentPipeline:
             return []
             
         try:
-            prompt = f"""
-            Extract potential biomedical terms from this sentence. 
-            Return only a list of terms, separated by commas. 
-            Terms can be made of one or more words.                       
-            Give advantage to compound terms: when you have a doubt between a candidate term of 2 words and 2 candidates of 1 word, ALWAYS choose the 2-word candidate term.       
-            Ignore common words such as "the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does",   
-            "did", "will", "would", "could", "should", "may", "might", "must", "can".                                                                                                                                                                
-                        
-            Sentence: "{sentence}"
+            # Prompt simplifié et plus clair
+            prompt = f"""Extract biomedical terms from this sentence: "{sentence}"
             
-            Terms (comma-separated):
-            """
+            Return ONLY a comma-separated list of terms. 
+            Examples: "insulin, diabetes, heart failure"
+            Do NOT include any explanation or extra text.
+            Focus on meaningful biological entities (genes, proteins, diseases, chemicals, etc.)
+            For compound terms like "7,8-didéhydro-4,5-époxy-17-méthylmorphinan-3,6-diol", keep them together.
+            Ignore common words like "the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can".
+            
+            Terms (comma-separated): """
             
             messages = [{"role": "user", "content": prompt}]
             response = generate(self.classification_model_id, messages, 500, 0.0)
             
             # Parser la réponse pour extraire les termes bruts
             raw_candidates = []
-            if "," in response:
+            if response and "," in response:
                 raw_candidates = [term.strip() for term in response.split(",") if term.strip()]
-            else:
-                raw_candidates = [response.strip()] if response.strip() else []
+            elif response:
+                raw_candidates = [response.strip()]
             
             # Use shared utility for filtering and deduplication
             return self._filter_and_deduplicate_candidates(raw_candidates)
@@ -454,4 +453,3 @@ if __name__ == "__main__":
         print(f"Passed:        {passed}")
         print(f"Failed:        {failed}")
         print("="*30)
-
