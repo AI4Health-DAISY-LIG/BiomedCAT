@@ -9,11 +9,13 @@ import tempfile
 import gc
 import requests
 from pathlib import Path
+from PIL import Image
 
 from biomedcat.config import settings
 from biomedcat.types import Slide
 
 GLM_PROMPT = "Text Recognition:"   # The instruction used for the OCR prompt
+GLM_BATCH_SIZE = 4  # Batch size for processing pages/images
 OLLAMA_URL = "http://localhost:11434/api/generate" # Default Ollama endpoint
 
 def free_gpu() -> None:
@@ -42,12 +44,11 @@ def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
     return str(pdf_path)
 
 
-def _to_pdf_or_image(file_path: str, tmp_dir: str) -> tuple[str, object]:
+def _to_pdf_or_image(file_path: str, tmp_dir: str) -> tuple[str, Image.Image | str]:
     """Normalise the input to a single page source: ('image', PIL.Image) or ('pdf', path)."""
     ext = Path(file_path).suffix.lower()
 
     if ext in (".png", ".jpg", ".jpeg"):
-        from PIL import Image
         return "image", Image.open(file_path).convert("RGB")
     if ext == ".pdf":
         try:
@@ -88,11 +89,10 @@ def load_model() -> str:
     """Returns the model ID used for external OCR calls."""
     return settings.ocr_model_id
 
-def _call_ollama_ocr(image: 'Image.Image', model_id: str) -> str:
+def _call_ollama_ocr(image: Image.Image, model_id: str) -> str:
     """Sends an image and prompt to the Ollama service for transcription."""
     try:
         with tempfile.NamedTemporaryFile(suffix=".png") as tmp_img:
-            from PIL import Image # Import locally if not globally available
             image.save(tmp_img.name)
             files = {'file': (f'{Path(tmp_img.name).name}', 'image/png', open(tmp_img.name, 'rb'))}
             data = {
@@ -110,7 +110,7 @@ def _call_ollama_ocr(image: 'Image.Image', model_id: str) -> str:
         return ""
 
 
-def process_image_batch(model_id: str, images: list['Image.Image']) -> list[str]:
+def process_image_batch(model_id: str, images: list[Image.Image]) -> list[str]:
     """Transcribe a batch of images by calling the external Ollama OCR service."""
     texts = []
     for image in images:
