@@ -14,7 +14,15 @@ from PIL import Image
 from biomedcat.config import settings
 from biomedcat.types import Slide
 
-GLM_PROMPT = "Text Recognition:"   # The instruction used for the OCR prompt
+GLM_PROMPT = (
+    "You are an expert biomedical scientist specializing in the analysis of scientific imagery, "
+    "including cell microscopy, molecular structures, genetic diagrams, and biological pathways. "
+    "Your task is to provide a detailed, descriptive caption for the provided image. "
+    "Focus on identifying key components, describing visual features (e.g., morphology, chemical bonds, flow direction), "
+    "noting any observed phenomena or relationships between elements, and comparing features if multiple similar images are presented. "
+    "Be highly grounded in visual evidence but provide rich descriptive language."
+)
+
 GLM_BATCH_SIZE = 4  # Batch size for processing pages/images
 OLLAMA_URL = "http://localhost:11434/api/generate" # Default Ollama endpoint
 
