@@ -18,10 +18,6 @@ GLM_PROMPT = "Text Recognition:"   # The instruction used for the OCR prompt
 GLM_BATCH_SIZE = 4  # Batch size for processing pages/images
 OLLAMA_URL = "http://localhost:11434/api/generate" # Default Ollama endpoint
 
-def free_gpu() -> None:
-    """Release Python garbage."""
-    gc.collect()
-
 
 def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
     """Convert a .pptx to .pdf via headless LibreOffice and return the PDF path.
@@ -98,7 +94,11 @@ def _call_ollama_ocr(image: Image.Image, model_id: str) -> str:
             data = {
                 "model": model_id,
                 "prompt": GLM_PROMPT,
-                "stream": False
+                "stream": False,
+                "options": {
+                    "temperature:0.2,"
+                    "num_predict": 1024
+                }
             }
 
             response = requests.post(OLLAMA_URL, files=files, data=data)
@@ -142,3 +142,23 @@ def run_ocr(file_path: str) -> list[Slide]:
     for page, text in enumerate(texts, start=1):
         slides.append(Slide(page=page, text=text))
     return slides
+
+
+if __name__ == "__main__":
+
+    TEST_FILE = "../"
+
+    try:
+        print(f"Starting OCR test on {TEST_FILE}...")
+        slides = run_ocr(TEST_FILE)
+
+        for slide in slides:
+            print("-" * 20)
+            print(f"Page {slide.page}:")
+            print(slide.text[:150] + "..." if len(slide.text) > 150 else slide.text)
+
+    except FileNotFoundError:
+        print(f"\nERROR: Test file not found at '{TEST_FILE}'. Please update TEST_FILE to a valid path.")
+
+    except Exception as e:
+        print(f"An error occurred during OCR test: {e}")
