@@ -16,6 +16,7 @@ from biomedcat.config import settings
 from biomedcat.stages.ocr import run_ocr
 from biomedcat.stages.ner import run_ner
 from biomedcat.stages.norm import run_norm
+from biomedcat.stages.rag_engine import build_rag
 from biomedcat.types import PipelineResult
 from biomedcat.events import event_emitter
 
@@ -34,39 +35,47 @@ def process_doc(path: str) -> PipelineResult:
     logger.info("=== Processing %s :", path)
 
     # Stage 1: OCR -> per-slide text.
+    logger.info("[1] Image recognition :")
     event_emitter.on_stage_change(path, "OCR", "running")
     t0 = time.perf_counter()
     slides = run_ocr(path)
     event_emitter.on_stage_change(path, "OCR", "done")
     logger.info("OCR done: %d slide(s) in %.1fs", len(slides), time.perf_counter() - t0)
 
-    # Stage 2: NER -> typed entities. Pool every slide's text into one file-level extraction.
-    event_emitter.on_stage_change(path, "NER", "running")
-    texts = []
-    for slide in slides:
-        texts.append(slide.text)
-    t0 = time.perf_counter()
-    entities = run_ner(texts, model=model_id)
-    event_emitter.on_stage_change(path, "NER", "done")
-    logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
+    # Stage 2: Build or update Biolink RAG
+    logger.info("[2] Building Biolink standards contruction :")
+    event_emitter.on_stage_change(path, "RAG", "running")
+    rag_engine = build_rag()
+    event_emitter.on_stage_change(path, "RAG", "done")
+    logger.info("Biolink standards contruction: completed in %.1fs", len(slides), time.perf_counter() - t0)
 
-    # Stage 3: Normalization -> entities linked to CURIEs.
-    event_emitter.on_stage_change(path, "Norm", "running")
-    t0 = time.perf_counter()
-    results = run_norm(entities, model_id=model_id)
-    event_emitter.on_stage_change(path, "Norm", "done")
-    linked = 0
-    for r in results:
-        if r.curie:
-            linked += 1
-    logger.info("Norm done: %d/%d linked in %.1fs", len(results), len(results), time.perf_counter() - t0)
+    # # Stage 3: NER -> typed entities. Pool every slide's text into one file-level extraction.
+    # event_emitter.on_stage_change(path, "NER", "running")
+    # texts = []
+    # for slide in slides:
+    #     texts.append(slide.text)
+    # t0 = time.perf_counter()
+    # entities = run_ner(texts, model=model_id)
+    # event_emitter.on_stage_change(path, "NER", "done")
+    # logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
-    return PipelineResult(
-        filename=Path(path).name,
-        ocr=slides,
-        ner=entities, 
-        norm=results,
-    )
+    # # Stage 3: Normalization -> entities linked to CURIEs.
+    # event_emitter.on_stage_change(path, "Norm", "running")
+    # t0 = time.perf_counter()
+    # results = run_norm(entities, model_id=model_id)
+    # event_emitter.on_stage_change(path, "Norm", "done")
+    # linked = 0
+    # for r in results:
+    #     if r.curie:
+    #         linked += 1
+    # logger.info("Norm done: %d/%d linked in %.1fs", len(results), len(results), time.perf_counter() - t0)
+
+    # return PipelineResult(
+    #     filename=Path(path).name,
+    #     ocr=slides,
+    #     ner=entities, 
+    #     norm=results,
+    # )
 
 
 def process_file(path: str, model_id: str = "gemma4:12b-it-qat") -> PipelineResult:
