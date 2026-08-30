@@ -9,6 +9,8 @@ from spacy.lang.en import English
 from biomedcat.runtime import generate
 from biomedcat.types import Entity, ENTITY_TYPES
 from biomedcat.stages.rag_engine import BiomedRAG
+from biomedcat.config import settings
+from biomedcat.stages.rag_engine import build_rag
 # from biomedcat import prompts
 
 logger = logging.getLogger(__name__)
@@ -304,6 +306,7 @@ class NERAgentPipeline:
     # ---------------------------------------------------------------------------
 
     def _agent_system_prompt(self) -> str:
+        
         return (
             "You are a Biomedical Ontology Agent. Your goal is to classify a term into the correct "
             "Biolink Entity Type. \n\n"
@@ -390,33 +393,60 @@ class NERAgentPipeline:
         """Main entry point for the NER Agent."""
         all_entities = []
         
-        for sentence in sentences:
-            if not sentence.strip():
-                continue
+        # for sentence in sentences:
+        #     if not sentence.strip():
+        #         continue
             
-            logger.info(f"Processing sentence: {sentence[:100]}...")
-            self.current_sentence = sentence  # Stocker le contexte
+        #     logger.info(f"Processing sentence: {sentence[:100]}...")
+        #     self.current_sentence = sentence  # Stocker le contexte
             
-            # 1. Extraction Phase (M1 - Recall)
-            candidates = self._extract_candidates_model(sentence)
+        # 1. Extraction Phase (M1 - Recall)
+        candidates = self._extract_candidates_model(sentences)
 
-            if not candidates:
-                continue
-
+        if not candidates:
+            # continue
+            return []
+        else:
             # 2. Agentic Classification & Verification Phase (M2)
             for term in candidates:
-                final_type = self._run_agentic_loop(term, sentence)
+                final_type = self._run_agentic_loop(term, sentences)
                 
                 if final_type:
-                    all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
+                    all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentences))
 
         return all_entities
+
+def run_ner_agent(texts, model=settings.classification_model_id, rag=build_rag()):
+    logging.basicConfig(level=logging.INFO)
+
+    # 1. Setup Environment
+    agent = NERAgentPipeline(
+        rag_unseen=rag,
+        classification_model_id=model,
+        sanitization_model_id=settings.sanitization_model_id
+    )
+
+    entities = []
+    for s,entry in enumerate(texts):
+
+        print(f"\n Slide {s+1} description: '{entry[1:150]}' ")
+        
+        try:
+            results = agent.extract([entry])
+            
+            
+            entities.append(Entity(text='', type='',segment=''))
+
+
+        except Exception as e:
+            print(f"  [ERROR] NER failed: {e}")
+
+    return entities
+
 
 if __name__ == "__main__":
     import json
     from pathlib import Path
-    from biomedcat.config import settings
-    from biomedcat.stages.rag_engine import build_rag
 
     logging.basicConfig(level=logging.INFO)
 
