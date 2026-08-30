@@ -10,22 +10,32 @@ import gc
 import requests
 from pathlib import Path
 from PIL import Image
+import os
+import io
+import base64
 
 from biomedcat.config import settings
 from biomedcat.types import Slide
+from biomedcat.runtime import chat
+from biomedcat.prompts import ocr_description
 
 GLM_PROMPT = (
-    "You are an expert biomedical scientist specializing in the analysis of scientific imagery, "
-    "including cell microscopy, molecular structures, genetic diagrams, and biological pathways. "
-    "Your task is to provide a detailed, descriptive caption for the provided image. "
-    "Focus on identifying key components, describing visual features (e.g., morphology, chemical bonds, flow direction), "
-    "noting any observed phenomena or relationships between elements, and comparing features if multiple similar images are presented. "
+    # " as well as your current vision and hypothesis. "
+    # "Your presentation can contain"
+    # "including cell microscopy, molecular structures, genetic diagrams, and biological pathways."
+    # "Your task is to provide a detailed, descriptive caption for the provided image."
+    "You are an expert biomedical scientist giving a presentation of the state-of-the art in your field,"
+    "Your task is to provide a detailed, descriptive presentation conveying your vision and hypotheses."
+    "Focus on identifying key components, describing visual features (e.g., morphology, chemical bonds, flow direction),"
+    "noting any observed phenomena or relationships between elements, and comparing features if multiple similar images are presented."
     "Be highly grounded in visual evidence but provide rich descriptive language."
+    "Your output should be only the most precise narrative of the scientist without titles, like a presentation in a scientific seminar"
 )
 
 GLM_BATCH_SIZE = 4  # Batch size for processing pages/images
-OLLAMA_URL = "http://localhost:11434/api/generate" # Default Ollama endpoint
-
+# OLLAMA_URL = "http://localhost:11434/api/chat"
+CACHE_OCR_FOLDER_PATH = Path.joinpath(Path(__file__).parent.parent.parent,'data/cache_ocr')
+Path(CACHE_OCR_FOLDER_PATH).mkdir(parents=True, exist_ok=True)
 
 def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
     """Convert a .pptx to .pdf via headless LibreOffice and return the PDF path.
@@ -96,23 +106,16 @@ def load_model() -> str:
 def _call_ollama_ocr(image: Image.Image, model_id: str) -> str:
     """Sends an image and prompt to the Ollama service for transcription."""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".png") as tmp_img:
-            image.save(tmp_img.name)
-            files = {'file': (f'{Path(tmp_img.name).name}', 'image/png', open(tmp_img.name, 'rb'))}
-            data = {
-                "model": model_id,
-                "prompt": GLM_PROMPT,
-                "stream": False,
-                "options": {
-                    "temperature:0.2,"
-                    "num_predict": 1024
-                }
-            }
 
-            response = requests.post(OLLAMA_URL, files=files, data=data)
-            response.raise_for_status()
-            result = response.json()
-            return result.get("response", "").strip()
+        image_buffer = io.BytesIO()
+        image.save(image_buffer, format="PNG")
+        image_bytes = image_buffer.getvalue()
+        image_base64_string = base64.b64encode(image_bytes).decode('utf-8')
+        image_base64_string = image_base64_string.replace("\n", "").replace("\r", "").strip()
+        messages = [{"role": "user", "content": ocr_description(), "images": [image_base64_string]}]
+        result = chat(model_id, messages, 8192, temperature=0.2)
+
+        return result
     except Exception as e:
         print(f"Error calling Ollama OCR service: {e}")
         return ""
@@ -129,9 +132,8 @@ def process_image_batch(model_id: str, images: list[Image.Image]) -> list[str]:
     return texts
 
 
-def run_ocr(file_path: str) -> list[Slide]:
+def run_ocr(file_path: str, model_id) -> list[Slide]:
     """Transcribe a file to per-slide text using Ollama OCR."""
-    model_id = None # Will be set by load_model()
     texts = []
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -139,9 +141,7 @@ def run_ocr(file_path: str) -> list[Slide]:
         kind, source = _to_pdf_or_image(file_path, tmp_dir)
 
         try:
-            model_id = load_model() # Get the configured OCR model ID
             for batch in _iter_batches(kind, source):
-                # Pass the model_id instead of processor/model objects
                 texts.extend(process_image_batch(model_id, batch))
         finally:
             pass
@@ -154,11 +154,11 @@ def run_ocr(file_path: str) -> list[Slide]:
 
 if __name__ == "__main__":
 
-    TEST_FILE = "../"
+    TEST_FILE = "Dataset/chemicals.pdf"
 
     try:
         print(f"Starting OCR test on {TEST_FILE}...")
-        slides = run_ocr(TEST_FILE)
+        slides = run_ocr(TEST_FILE,settings.ocr_model_id)
 
         for slide in slides:
             print("-" * 20)

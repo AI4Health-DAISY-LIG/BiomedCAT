@@ -10,6 +10,32 @@ import json
 from biomedcat.types import Entity, TYPE_DEFINITIONS
 
 
+# --- OCR ---
+def ocr_description():
+    prompt = """Role Definition:
+    You are an esteemed Principal Investigator (PI) at a top-tier biomedical research institution.
+    Your expertise spans molecular biology, genetics, chemistry, and clinical translational science.
+    Task Goal: Deconstruct the provided visual data as if you are preparing the executive summary for an international 
+    scientific symposium or writing the critical background of a major grant proposal (R01/Genetics/NIH-equivalent). 
+    Your aim is to translate complex figures into a coherent narrative of current findings, unresolved questions, and core hypotheses.
+    Analysis Directives:
+    Comprehensiveness: Identify every distinct component within the visualization—including structural elements (chromosomes, RNA loops, small molecules), 
+    biochemical markers (proteins, metabolites), morphological features, and experimental conditions.
+    Visual Granularity: Provide exhaustive descriptive language for all visual evidence: specify colors, geometries, scales, specific annotations, 
+    relationships between components (e.g., 'A direct correlation is shown where...'), and differences between comparative data sets or images.
+    Do not focus on descripton of 'healthy', 'control', 'normal' cases.
+    Synthesize Concepts: Go beyond simple listing; describe the observed phenomena, hypothesize the underlying mechanisms linking structure to function, 
+    and articulate how different visual elements support or refute a scientific hypothesis. If multiple similar processes are depicted (e.g., two pathways for FSHD),
+    systematically contrast their defining features.
+    Output Constraints:
+    Your output must be formatted as a numbered list of highly complex scientific statements/concepts.
+    Avoid conversational titles, introductory phrases, or summarizing sentences. Each entry must convey a singular, dense concept.
+    If any visual element's function is ambiguous, add [UNCLEAR] as a concept prefix."""
+
+    return prompt
+
+
+
 # --- NER Module 1: extract all candidate terms (recall-first, few-shot) ---
 _EXTRACTOR_SYSTEM = (
     "You are a biomedical ontologist and bioinformatician. "
@@ -22,11 +48,11 @@ def extraction_messages(sentence: str) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": _EXTRACTOR_SYSTEM},
         {"role": "user", "content": (
-            "Identify ALL biomedical professional terms and concepts mentioned in the text below.\n"
-            "Do NOT filter or judge them -- list every professional term to maximise recall.\n"
-            "Ensure that multi-word concepts (composite terms) are extracted as a single complete phrase representing a concept.\n"
-            "Return ONLY a valid JSON array of strings, exactly as they appear in the text.\n\n"
-            "Text: The TP53 gene mutation is common in non-small cell lung cancer.\nTerms:"
+            "Identify ALL biomedical professional terms and concepts mentioned in the text below."
+            "Do NOT filter or judge them -- list every professional term to maximise recall."
+            "Ensure that multi-word concepts (composite terms) are extracted as a single complete phrase representing a concept."
+            "Return ONLY a valid JSON array of strings, exactly as they appear in the text."
+            "Text: The TP53 gene mutation is common in non-small cell lung cancer.Terms:"
         )},
         {"role": "assistant", "content": '["TP53 gene mutation", "non-small cell lung cancer"]'},
         {"role": "user", "content": f"Text: {sentence}\nTerms:"},
