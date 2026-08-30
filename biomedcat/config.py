@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+ROOT_PATH = Path(__file__).parent.parent
+
 class Settings:
     """
     BiomedCAT application configuration.
@@ -19,14 +21,18 @@ class Settings:
         # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"
 
         # Working paths (mounted via Docker volumes)
-        self.internal_data_path = os.getenv("INTERNAL_DATA_PATH", os.path.join(os.getcwd(), "data"))
+        self.internal_data_path = os.getenv("INTERNAL_DATA_PATH", Path.joinpath(ROOT_PATH, "data"))
         base_dir = Path(self.internal_data_path)
         base_dir.mkdir(parents=True, exist_ok=True)
-        self.chroma_db_path = os.getenv("CHROMADB_PATH",os.path.join(os.getcwd(), "data/biolink_chromaDB"))
+
+        self.chroma_db_path = os.getenv("CHROMADB_PATH",Path.joinpath(ROOT_PATH, "data/biolink_chromaDB"))
         base_dir = Path(self.chroma_db_path)
         base_dir.mkdir(parents=True, exist_ok=True)
-        self.dataset_path = os.getenv("DATASET_PATH", "/app/data") # TO BE CHANGED
-        self.output_path = os.getenv("OUTPUT_PATH", "/app/output") # TO BE CHANGED
+
+        self.dataset_path = os.getenv("DATASET_PATH", Path.joinpath(ROOT_PATH, "dataset"))
+        self.output_path = os.getenv("OUTPUT_PATH", Path.joinpath(ROOT_PATH, "output"))
+        base_dir = Path(self.output_path)
+        base_dir.mkdir(parents=True, exist_ok=True)
         
         # Pipeline configuration
         self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
@@ -35,8 +41,7 @@ class Settings:
         # --- Attributes required by the pipeline (to avoid AttributeError) ---
         
         # Map task models to the default main model
-        # self.ocr_model_id = os.getenv("OCR_MODEL_ID", "zai-org/GLM-OCR")
-        self.ocr_model_id = os.getenv("OCR_MODEL_ID","qwen2.5vl:7b")
+        self.ocr_model_id = os.getenv("OCR_MODEL_ID","qwen2.5vl:3b")
         self.RAG_embedding_model = os.getenv("EMBEDDINGS_MODEL_ID", "NeuML/bioclinical-modernbert-base-embeddings")
         self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
         self.sanitization_model_id = os.getenv("SANITIZATION_MODEL_ID", "llama-guard3:1b")
