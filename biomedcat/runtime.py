@@ -43,7 +43,7 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
             response = requests.post(url, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
-            return data["message"]["content"].strip()
+            return data["response"].strip()
         except requests.exceptions.Timeout:
             logger = logging.getLogger(__name__)
             logger.error(f"Timeout communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
