@@ -17,10 +17,16 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
     Returns:
         The generated text response from the model, or an empty string if an error occurs.
     """
+    prompt = ""
+    for msg in messages:
+        role = msg.get("role", "user").capitalize()
+        content = msg["content"]
+        prompt += f"{role}: {content}\n"
+
     url = f"{settings.ollama_url.rstrip('/')}/api/generate"
     payload = {
         "model": model_id,
-        "prompt": messages,
+        "prompt": prompt.strip(),
         "stream": False,
         "options": {
             "temperature": temperature,
@@ -67,7 +73,6 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
             return ""
     
     return ""
-
 
 
 def chat(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, temperature: float = 0.0) -> str:
