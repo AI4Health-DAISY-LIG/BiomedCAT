@@ -34,7 +34,7 @@ import logging
 # 1️⃣  Paramètres (modifiable via variables d’environnement)
 # -------------------------------------------------------------------------
 # Adresse e‑mail obligatoire pour Entrez (NCBI)
-Entrez.email = "sandrine.muller@univ-granoble-alpes.org"
+Entrez.email = "my-email@my-institution.org"
 Entrez.tool = "biomedcat_frequencies"
 
 MAX_ABSTRACTS = int(os.getenv("MAX_ABSTRACTS", "10000"))   # nb d’abstraits à récupérer
