@@ -59,13 +59,10 @@ class NERAgentPipeline:
             if not re.search(r'[a-zA-Z]', candidate):
                 continue
 
-            # Regex check for standard biomedical/chemical characters
-            valid_chars = r'^[a-zA-Z0-9\-\.()\[\]_]+$'
-            if re.match(valid_chars, candidate) or re.match(r'^[a-zA-ZÀ-ÿ0-9\-\.()\[\]_]+$', candidate):
-                # Deduplication case-insensitive
-                if candidate.lower() not in seen:
-                    seen.add(candidate.lower())
-                    final_candidates.append(candidate)
+            # Deduplication case-insensitive
+            if candidate.lower() not in seen:
+                seen.add(candidate.lower())
+                final_candidates.append(candidate)
 
         return final_candidates
 
@@ -271,7 +268,7 @@ class NERAgentPipeline:
             Terms (pipe separated): """
             
             messages = [{"role": "user", "content": prompt}]
-            response = generate(self.classification_model_id, messages, 500, 0.0)
+            response = generate(self.classification_model_id, messages, 800, 0.0)
             
             # Parser la réponse pour extraire les termes bruts
             raw_candidates = []
@@ -308,25 +305,24 @@ class NERAgentPipeline:
     def _agent_system_prompt(self) -> str:
         
         return (
-            "You are a Biomedical Ontology Agent. Your goal is to classify a term into the correct "
-            "Biolink Entity Type. \n\n"
-            "For terms with multiple words, you may need to break it down into two different concepts "
-            "to capture the most information content. For example alcohol dependence will be translated "
-            "into : alcohol (small molecule) and dependence (disease).\n\n"
-            "If the term is a verb, transform it into a noun. For example, 'treats' will be transformed "
-            "into treatment and keep it ONLY if it has high informative content.\n\n"
-            " You have access to three specialized tools.\n\n"
-            "TOOLS:\n"
-            "1. lookup_exact_term(term): Use this for specific terms like 'TP53'.\n"
-            "2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.\n"
-            "3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings "
-            "to verify if a term fits a category.\n\n"
-            "PROCESS:\n"
-            "For each step, you must output your 'THOUGHT' (reasoning) and then an 'ACTION' in the format:\n"
-            "ACTION: tool_name(argument)\n\n"
-            "When you are certain of the type, end your response with exactly:\n"
-            "FINAL_VERDICT: <TYPE>\n\n"
-            "Available Types: " + ", ".join(ENTITY_TYPES)
+            """You are a Biomedical Ontology Agent. Your goal is to classify a term into the correct
+            Biolink Entity Type by looking at the most probable type definition and ist children and parents definitions. 
+            For terms with multiple words, you may need to break it down into two different concepts
+            to capture the most information content. For example alcohol dependence will be translated
+            into : alcohol (small molecule) and dependence (disease).
+            If the term is a verb, transform it into a noun. For example, 'treats' will be transformed
+            into treatment and keep it ONLY if it has high informative content.
+            You have access to three specialized tools that you MUST use.
+            TOOLS:
+            1. lookup_exact_term(term): Use this for specific terms like 'TP53'.
+            2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.
+            3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings
+            to verify if a term fits a category.
+            PROCESS:
+            For each step, you must output your 'THOUGHT' (reasoning) and then an 'ACTION' in the format:
+            ACTION: tool_name(argument)
+            When you are certain of the type, end your response with exactly:
+            FINAL_VERDICT: <TYPE>"""
         )
 
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
@@ -389,10 +385,10 @@ class NERAgentPipeline:
 
         return None
 
-    def extract(self, sentences: List[str]) -> List[Entity]:
+    def extract(self, text: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
         all_entities = []
-        
+        ########################## ADD sentence tokenizer HERE
         # for sentence in sentences:
         #     if not sentence.strip():
         #         continue
@@ -427,12 +423,12 @@ def run_ner_agent(texts, model=settings.classification_model_id, rag=build_rag()
     )
 
     entities = []
-    for s,entry in enumerate(texts):
+    for s,text in enumerate(texts):
 
         print(f"\n Slide {s+1} description: '{entry[1:150]}' ")
         
         try:
-            results = agent.extract([entry])
+            results = agent.extract(text)
             
             
             entities.append(Entity(text='', type='',segment=''))
