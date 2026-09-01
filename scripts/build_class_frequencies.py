@@ -4,7 +4,7 @@
 """
 build_class_frequencies.py
 
-Génère data/biolink_class_frequencies.json à partir d'un corpus PubMed.
+Génère data/biolink_class_frequencies.json à partir d'un corpus PubMed. Samples Pubmed abstract from MESH categories in biomedical field. 
 Le script :
 
 1️⃣ récupère N abstracts (par défaut 10,000) via Entrez,
@@ -21,7 +21,7 @@ import os
 import json
 import time
 import math
-import re  # ← ajouté pour nettoyer d'éventuels caractères spéciaux
+import re
 from pathlib import Path
 from collections import Counter
 from tqdm import tqdm
@@ -33,7 +33,7 @@ import logging
 from dotenv import load_dotenv
 
 # -------------------------------------------------------------------------
-# 1️⃣  Paramètres (modifiable via variables d’environnement)
+# 1.Paramètres (modifiable via variables d’environnement)
 # -------------------------------------------------------------------------
 # Adresse e‑mail obligatoire pour Entrez (NCBI)
 BASE_DIR = Path(__file__).resolve().parent.parent   # root
@@ -56,7 +56,7 @@ RETRY_DELAY   = float(os.getenv("RETRY_DELAY", "1.0"))   # délai initial (s) en
 OUTPUT_PATH   = Path("data/biolink_class_frequencies.json")
 
 # --------------------------------------------------------------
-# 3️⃣  Catégories MeSH à interroger (A → E, G)
+# 2. Catégories MeSH à interroger (A → E, G)
 # --------------------------------------------------------------
 # Chaque préfixe correspond à un « tree number » de MeSH.
 # Exemple : "A*" → Anatomie, "C*" → Maladies, etc.
@@ -69,7 +69,7 @@ MESH_PER_CATEGORY = int(os.getenv("MESH_PER_CATEGORY", "800"))
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
-# 2️. Initialisation des composants du pipeline
+# 3. Initialisation des composants du pipeline
 # -------------------------------------------------------------------------
 settings = Settings()
 rag_engine = build_rag(settings)   # moteur hybride dense+BM25
@@ -80,7 +80,7 @@ ner_agent = NERAgentPipeline(
 )
 
 # -------------------------------------------------------------------------
-# 3.Fonctions utilitaires
+# 4.Fonctions utilitaires
 # -------------------------------------------------------------------------
 def _retry(func):
     """Décorateur simple de retry avec back‑off exponentiel."""
@@ -98,13 +98,13 @@ def _retry(func):
         return None
     return wrapper
 
-@_retry
-def fetch_pubmed_ids(term: str = "cancer", max_ids: int = MAX_ABSTRACTS) -> list[str]:
-    """Retourne une liste de PMIDs (strings)."""
-    handle = Entrez.esearch(db="pubmed", term=term, retmax=max_ids, usehistory="y")
-    record = Entrez.read(handle)
-    handle.close()
-    return record["IdList"]
+# @_retry
+# def fetch_pubmed_ids(term: str = "cancer", max_ids: int = MAX_ABSTRACTS) -> list[str]:
+#     """Retourne une liste de PMIDs (strings)."""
+#     handle = Entrez.esearch(db="pubmed", term=term, retmax=max_ids, usehistory="y")
+#     record = Entrez.read(handle)
+#     handle.close()
+#     return record["IdList"]
 
 @_retry
 def fetch_abstracts_batch(pmids: list[str]) -> list[str]:
@@ -129,8 +129,8 @@ def fetch_pmids_by_mesh_category(
 ) -> list[str]:
     """
     Retourne une liste d'PMID uniques en interrogeant chaque catégorie
-    MeSH (ex. « A* », « C* »). Le même nombre d’identifiants est demandé
-    pour chaque catégorie afin d’obtenir un corpus équilibré.
+    MeSH (ex. « A* », « C* »). Le même nombre d'identifiants est demandé
+    pour chaque catégorie afin d'obtenir un corpus équilibré.
     """
     all_ids: set[str] = set()
     for cat in categories:
@@ -151,7 +151,7 @@ def fetch_pmids_by_mesh_category(
     return list(all_ids)
 
 def map_term_to_class(term: str) -> str | None:
-    """Utilise le RAG pour obtenir la classe la plus probable (top‑1)."""
+    """Utilise le RAG pour obtenir le top 10 des classes les plus probables (reaching 98% recall)."""
     try:
         top = rag_engine.search(term, top_k=1)
         return top[0] if top else None
@@ -183,7 +183,7 @@ def main():
         MESH_CATEGORIES,
         per_category=MESH_PER_CATEGORY,
     )
-    logger.info(f"    → {len(pmids)} PMIDs uniques récupérés (équilibrés).")
+    logger.info(f"    → {len(pmids)} unique PMIDs.")
 
     logger.info("[*] Téléchargement des abstracts …")
     abstracts = fetch_all_abstracts(pmids)
@@ -200,7 +200,7 @@ def main():
     # Affichage de quelques stats rapides
     total = sum(class_counts.values())
     logger.info("\n[+] Fichier généré : %s", OUTPUT_PATH)
-    logger.info(f"    Total d’occurrences comptées : {total}")
+    logger.info(f"    Total d'occurrences comptées : {total}")
     logger.info(f"    Nombre de classes différentes : {len(class_counts)}")
     logger.info("\nTop‑10 classes (fréquence brute) :")
     for cls, cnt in class_counts.most_common(10):
