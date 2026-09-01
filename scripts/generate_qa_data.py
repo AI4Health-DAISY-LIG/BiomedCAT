@@ -3,7 +3,7 @@ import random
 import yaml
 import ollama
 import pandas as pd
-from openai import OpenAI # Import for OpenAI compatibility
+from openai import OpenAI  # Import for OpenAI compatibility
 
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -31,18 +31,18 @@ MODEL_NAME = "gemma4:e4b-it-qat"
 TARGET_PER_CLASS = 30
 
 BATCH_SIZE = 5  # Reduced batch size for better control and diversity
-MAX_ATTEMPTS_PER_CLASS = 12 # Increased attempts to compensate for smaller batches
+MAX_ATTEMPTS_PER_CLASS = 12  # Increased attempts to compensate for smaller batches
 
 RANDOM_SEED = 77
 
 # These are structural ontology nodes, NOT entity classes
 # that should receive generated examples.
-EXCLUDED_CLASSES = {"entity","named thing"}
+EXCLUDED_CLASSES = {"entity", "named thing"}
 
 
 class StratifiedQAGenerator:
 
-    def __init__(self,rag_engine,nested_data: Dict[str, Any],config: Dict[str, Any]):
+    def __init__(self, rag_engine, nested_data: Dict[str, Any], config: Dict[str, Any]):
         self.rag_engine = rag_engine
         self.nested_data = nested_data
         self.config = config
@@ -57,7 +57,6 @@ class StratifiedQAGenerator:
         # Reproducibility.
         self.random = random.Random(RANDOM_SEED)
 
-
     def _analyze_hierarchy(self):
         """
         Recursively analyze the nested ontology.
@@ -66,8 +65,8 @@ class StratifiedQAGenerator:
 
         print("[*] Analyzing hierarchy...")
         self.class_metadata = {}
-        def traverse(node_name: str,node_data: Dict[str, Any],depth: int,ancestors: List[str]):
-            children = node_data.get("children",{})
+        def traverse(node_name: str, node_data: Dict[str, Any], depth: int, ancestors: List[str]):
+            children = node_data.get("children", {})
 
             if isinstance(children, dict):
                 child_items = children.items()
@@ -89,19 +88,18 @@ class StratifiedQAGenerator:
             }
 
             # Recurse into children:
-            for child_name, child_data in (node_data.get("children",{}).items()):
-                traverse(node_name=child_name,node_data=child_data,depth=depth + 1,ancestors=path)
+            for child_name, child_data in (node_data.get("children", {}).items()):
+                traverse(node_name=child_name, node_data=child_data, depth=depth + 1, ancestors=path)
 
         # Start from the actual JSON wrapper:
         root_name = "entity"
         if root_name not in self.nested_data:
             raise ValueError(f"Expected top-level '{root_name}' node, but found: {list(self.nested_data.keys())}")
 
-        traverse(node_name=root_name,node_data=self.nested_data[root_name],depth=0,ancestors=[])
+        traverse(node_name=root_name, node_data=self.nested_data[root_name], depth=0, ancestors=[])
 
         # Report before exclusion:
         print(f"[*] Total nodes including wrappers: {len(self.class_metadata)}")
-
 
         # Remove structural nodes from sampling metadata:
         for excluded in EXCLUDED_CLASSES:
@@ -133,7 +131,7 @@ class StratifiedQAGenerator:
         Read the sampling configuration.
         ... (omitted for brevity, logic remains same as original) ...
         """
-        return self.config.get("sampling",{})
+        return self.config.get("sampling", {})
 
     # Sampling plan:
     def _get_sampling_plan(self):
@@ -146,7 +144,7 @@ class StratifiedQAGenerator:
 
         # --- Contrôle de Profondeur (Hierarchy Depth) ---
         depth_cfg = self.config.get("constraints", {}).get("hierarchy_depth", {})
-        bins = depth_cfg.get("bins", []) # Ex: [[1, 2], [3, 4]]
+        bins = depth_cfg.get("bins", [])  # Ex: [[1, 2], [3, 4]]
 
         # Initialisation du plan de génération (classe -> {target, style})
         generation_plan: Dict[str, Dict[str, Any]] = {}
@@ -158,7 +156,7 @@ class StratifiedQAGenerator:
 
             # Déterminer le target de base (par défaut)
             base_target = int(self.config.get("constraints", {}).get("leaf_class", {}).get("target", TARGET_PER_CLASS))
-            
+
             # --- LOGIQUE DE BIAIS PAR PROFONDEUR ---
             depth = metadata["depth"]
             adjusted_target = base_target
@@ -166,13 +164,13 @@ class StratifiedQAGenerator:
             for bin_start, bin_end in bins:
                 if bin_start <= depth <= bin_end:
                     # Exemple simple : si on est dans un bin ciblé, augmenter le target de 20%
-                    adjusted_target = int(base_target * 1.2) 
+                    adjusted_target = int(base_target * 1.2)
                     break
 
             # --- LOGIQUE DE STYLE (Ambiguity & Surface Form) ---
             style_cfg = self.config.get("constraints", {}).get("ambiguity", {})
             surface_cfg = self.config.get("constraints", {}).get("surface_form", {})
-            
+
             required_style = {
                 "ambiguity": style_cfg.get("categories", {}).get("ambiguous") if style_cfg.get("enabled") else None,
                 "surface_form": surface_cfg.get("categories", {}).get("uncommon") if surface_cfg.get("enabled") else None
@@ -185,13 +183,12 @@ class StratifiedQAGenerator:
             }
             total_planned_samples += adjusted_target
 
-
         # --- LOGIQUE DE CIBLE GLOBALE (Global Target Size) ---
         if total_planned_samples > target_size:
-             print(f"[!] Warning: Total planned samples ({total_planned_samples}) exceeds global target size ({target_size}). Scaling down targets proportionally.")
-             scaling_factor = target_size / total_planned_samples
-             for class_name, plan in generation_plan.items():
-                 plan["target"] = int(plan["target"] * scaling_factor)
+            print(f"[!] Warning: Total planned samples ({total_planned_samples}) exceeds global target size ({target_size}). Scaling down targets proportionally.")
+            scaling_factor = target_size / total_planned_samples
+            for class_name, plan in generation_plan.items():
+                plan["target"] = int(plan["target"] * scaling_factor)
 
         # Convertir le dictionnaire en liste de tuples pour l'itération (classe, target, style)
         final_sampling_list = []
@@ -200,17 +197,17 @@ class StratifiedQAGenerator:
 
         return final_sampling_list
 
-
     # Definition lookup:
-    def _get_definition(self,class_name: str) -> str:
+    def _get_definition(self, class_name: str) -> str:
         if class_name not in self.rag_engine.flat_data:
             return ""
 
-        metadata = self.rag_engine.flat_data[class_name].get("metadata",{})
-        return (metadata.get("definition","") or "")
+        metadata = self.rag_engine.flat_data[class_name].get("metadata", {})
+        return (metadata.get("definition", "") or "")
 
     # LLM generation (Batch implementation)
-    def _generate_batch(self, class_name: str, definition: str, n: int, rag_context: Dict[str, Any], negative_queries: List[str], style: Dict[str, Any]) -> List[Dict[str, str]]:
+    def _generate_batch(self, class_name: str, definition: str, n: int, rag_context: Dict[str, Any],
+                        negative_queries: List[str], style: Dict[str, Any]) -> List[Dict[str, str]]:
         """
         Generates a batch of queries using LLM with structural constraints and negative filtering.
 
@@ -242,7 +239,7 @@ class StratifiedQAGenerator:
         # --- NOUVEAU : Construction des instructions stylistiques basées sur le YAML ---
         style_instructions = []
         if style and style.get("ambiguity"):
-            level = "highly ambiguous" if style["ambiguity"] == 0.3 else "unambiguous" # Logique simple basée sur les catégories
+            level = "highly ambiguous" if style["ambiguity"] == 0.3 else "unambiguous"  # Logique simple basée sur les catégories
             style_instructions.append(f"The query must be {level} in its semantic scope.")
 
         if style and style.get("surface_form"):
@@ -287,12 +284,12 @@ class StratifiedQAGenerator:
         # --- LLM Client Abstraction Logic ---
         llm_cfg = self.config.get("llm", {})
         use_openai_compatible = llm_cfg.get("use_openai_compatible", False)
-        model_to_use = MODEL_NAME # Default model name
+        model_to_use = MODEL_NAME  # Default model name
 
         if use_openai_compatible:
             client = OpenAI(
-                api_key=llm_cfg["api_key"], 
-                base_url=llm_cfg.get("base_url", "http://localhost:8080/v1") # Default base URL if not provided
+                api_key=llm_cfg["api_key"],
+                base_url=llm_cfg.get("base_url", "http://localhost:8080/v1")  # Default base URL if not provided
             )
             # Note: We use the model name defined in config or default to MODEL_NAME
             model_to_use = llm_cfg.get("model", MODEL_NAME)
@@ -301,7 +298,7 @@ class StratifiedQAGenerator:
                 response = client.chat.completions.create(
                     model=model_to_use,
                     messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"} # OpenAI uses response_format for JSON output
+                    response_format={"type": "json_object"}  # OpenAI uses response_format for JSON output
                 )
                 # The structure of the response content differs from Ollama
                 content = response.choices[0].message.content
@@ -313,22 +310,21 @@ class StratifiedQAGenerator:
             # Fallback to Ollama implementation (Original logic)
             response = ollama.chat(
                 model=MODEL_NAME,
-                format=schema, # Note: Ollama format parameter is used here
+                format=schema,  # Note: Ollama format parameter is used here
                 messages=[{"role": "user", "content": prompt}],
             )
 
             content = response["message"]["content"]
         # --- End LLM Client Abstraction Logic ---
 
-
         try:
             data = json.loads(content)
             if not isinstance(data, list):
                 return []
-            
+
             valid_batch = []
             for item in data:
-                query = (item.get("query","").strip())
+                query = (item.get("query", "").strip())
                 if query and 1 <= len(query.split()) <= 3:
                     # Basic whitespace normalization
                     normalized_query = " ".join(query.split()).casefold()
@@ -340,7 +336,6 @@ class StratifiedQAGenerator:
             print(f"  [!] Parsing error for {class_name}: {e}")
             return []
 
-
     # Generate one class (Iterative Controller)
     def _generate_for_class(self, class_name: str, target: int, style: Dict[str, Any]) -> List[Dict[str, Any]]:
 
@@ -351,7 +346,7 @@ class StratifiedQAGenerator:
 
         metadata = self.class_metadata[class_name]
         collected: List[Dict[str, Any]] = []
-        seen_queries: set = set() # Set of normalized queries already collected
+        seen_queries: set = set()  # Set of normalized queries already collected
         attempts = 0
 
         print(f"\n--- Starting generation for {class_name} (Target: {target}, Style: {style}) ---")
@@ -380,12 +375,12 @@ class StratifiedQAGenerator:
                 n=request_n,
                 rag_context=rag_context,
                 negative_queries=negative_queries,
-                style=style # Passage du style ici
+                style=style  # Passage du style ici
             )
 
             newly_accepted_samples: List[Dict[str, Any]] = []
             for sample in generated_batch:
-                query = sample["query"] # Already normalized by _generate_batch
+                query = sample["query"]  # Already normalized by _generate_batch
                 key = query.casefold()
 
                 # Phase 2.2/3.3: Validation and Filtering (Strict Uniqueness)
@@ -396,27 +391,25 @@ class StratifiedQAGenerator:
             # Update collected samples
             for sample in newly_accepted_samples:
                 collected.append({
-                        "query": sample["query"],
-                        "expected_class": class_name,
-                        # Hierarchy metadata
-                        "depth": metadata["depth"],
-                        "is_leaf": metadata["is_leaf"],
-                        "ancestors": metadata["ancestors"],
-                        "path": metadata["path"],
-                        "parent_class": (
-                            metadata["ancestors"][-1]
-                            if metadata["ancestors"]
-                            else None
-                        ),
-                        # Phase 3.1: Tracking generation context
-                        "generation_attempt": attempts,
-                        "rag_context_used": rag_context # Store constraints used for traceability
-                    }
-                )
+                    "query": sample["query"],
+                    "expected_class": class_name,
+                    # Hierarchy metadata
+                    "depth": metadata["depth"],
+                    "is_leaf": metadata["is_leaf"],
+                    "ancestors": metadata["ancestors"],
+                    "path": metadata["path"],
+                    "parent_class": (
+                        metadata["ancestors"][-1]
+                        if metadata["ancestors"]
+                        else None
+                    ),
+                    # Phase 3.1: Tracking generation context
+                    "generation_attempt": attempts,
+                    "rag_context_used": rag_context  # Store constraints used for traceability
+                })
 
             print(f"  -> Accepted {len(newly_accepted_samples)} new unique samples.")
             print(f"  Current total: {len(collected)} / {target}")
-
 
         if len(collected) < target:
             print(f"[!] Generation finished. Only generated {len(collected)} / {target} for {class_name}. Max attempts reached or no new unique samples found.")
@@ -424,7 +417,7 @@ class StratifiedQAGenerator:
         return collected
 
     # Final dataset validation (Unchanged)
-    def _validate_dataset(self,df: pd.DataFrame):
+    def _validate_dataset(self, df: pd.DataFrame):
         print("\n[*] Dataset validation")
         print(f"Total samples: {len(df)}")
         print(f"Unique classes: {df['expected_class'].nunique()}")
@@ -438,9 +431,9 @@ class StratifiedQAGenerator:
         for class_name, metadata in (self.class_metadata.items()):
             if not metadata["is_leaf"]:
                 continue
-            count = int(counts.get(class_name,0,))
+            count = int(counts.get(class_name, 0,))
             if count < minimum:
-                missing.append( (class_name, count,))
+                missing.append((class_name, count,))
         if missing:
             print(f"    [!] {len(missing)} leaf classes below minimum {minimum}")
             for class_name, count in missing:
@@ -457,20 +450,32 @@ class StratifiedQAGenerator:
     # Main execution (Modified to use the new iterative generator)
     def run(self):
 
-        sampling_plan = self._get_sampling_plan() # Utilise le nouveau plan structuré
+        sampling_plan = self._get_sampling_plan()  # Utilise le nouveau plan structuré
         print(f"\n[*] Leaf classes selected: {len(sampling_plan)}")
         print(f"[*] Planned total samples: {sum(target for _, target, _ in sampling_plan)}")
 
+        # Définir la cible globale d'échantillons
+        global_target = int(self.config.get("dataset", {}).get("target_size", 4000))
+
         # Générer itérativement :
-        for i, (class_name, target, style) in enumerate(sampling_plan, start=1): # Déstructuration du plan
+        for i, (class_name, target, style) in enumerate(sampling_plan, start=1):  # Déstructuration du plan
             metadata = self.class_metadata[class_name]
             print(f"\n=====================================================")
             print(f"[{i}/{len(sampling_plan)}] Starting generation for: {class_name}")
-            print(f"Depth: {metadata['depth']}, Target: {target}, Style: {style}") # Affichage du style
+            print(f"Depth: {metadata['depth']}, Target: {target}, Style: {style}")  # Affichage du style
 
             # Appel de la méthode avec le target et le style
-            samples = (self._generate_for_class(class_name=class_name, target=target, style=style)) 
+            samples = (self._generate_for_class(class_name=class_name, target=target, style=style))
             self.all_samples.extend(samples)
+
+            # -----------------------------------------------------------------
+            # Vérification de la cible globale après chaque classe générée
+            # -----------------------------------------------------------------
+            if len(self.all_samples) >= global_target:
+                print(f"\n[+] Objectif global de {global_target} échantillons atteint. Arrêt de la génération.")
+                # Troncature éventuelle pour ne pas dépasser le quota
+                self.all_samples = self.all_samples[:global_target]
+                break
 
         if not self.all_samples:
             print("[!] No samples generated.")
@@ -478,6 +483,15 @@ class StratifiedQAGenerator:
 
         # Final dataframe creation and deduplication (Unchanged logic)
         df = pd.DataFrame(self.all_samples)
+
+        # -----------------------------------------------------------------
+        # Contrôle du nombre total d'échantillons par rapport à la cible globale
+        # -----------------------------------------------------------------
+        if len(df) > global_target:
+            print(f"\n[!] Le DataFrame contient {len(df)} lignes, supérieur au target global ({global_target}). Troncature appliquée.")
+            df = df.head(global_target)  # garde les premières lignes (déjà triées plus bas)
+        elif len(df) < global_target:
+            print(f"\n[!] Le DataFrame ne contient que {len(df)} lignes, inférieur au target global ({global_target}).")
 
         # Global deduplication based on normalized query
         df["query_normalized"] = (df["query"].str.strip().str.casefold())
@@ -488,25 +502,25 @@ class StratifiedQAGenerator:
         if duplicate_count:
             print(f"\n[!] Found {duplicate_count} rows participating in cross-class duplicates.")
             # Keep the first occurrence.
-            df = df.drop_duplicates(subset=["query_normalized"],keep="first")
+            df = df.drop_duplicates(subset=["query_normalized"], keep="first")
 
         after = len(df)
         print(f"[*] Removed {before - after} duplicate rows globally.")
 
         # Add stable sample ID and clean up columns
-        df.insert(0,"sample_id",[f"sample_{i:06d}" for i in range(1,len(df) + 1,)],)
+        df.insert(0, "sample_id", [f"sample_{i:06d}" for i in range(1, len(df) + 1,)],)
         df = df.drop(columns=["query_normalized"])
 
         # Ensure deterministic ordering
-        df = df.sort_values(by=["expected_class","query",],kind="stable").reset_index(drop=True)
-        df["sample_id"] = [f"sample_{i:06d}" for i in range(1,len(df) + 1,)]
+        df = df.sort_values(by=["expected_class", "query", ], kind="stable").reset_index(drop=True)
+        df["sample_id"] = [f"sample_{i:06d}" for i in range(1, len(df) + 1,)]
 
         # Validate.
         self._validate_dataset(df)
 
         # Save
-        OUTPUT_PARQUET.parent.mkdir(parents=True,exist_ok=True)
-        df.to_parquet(OUTPUT_PARQUET,engine="pyarrow",index=False)
+        OUTPUT_PARQUET.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(OUTPUT_PARQUET, engine="pyarrow", index=False)
         print(f"\n[+] Success!")
         print(f"Samples: {len(df)}")
         print(f"Classes: {df['expected_class'].nunique()}")
@@ -527,21 +541,24 @@ class StratifiedQAGenerator:
             if not metadata["is_leaf"]:
                 continue
             depth = metadata["depth"]
-            leaf_depth_counts[depth] = (leaf_depth_counts.get(depth,0)+ 1)
+            leaf_depth_counts[depth] = (leaf_depth_counts.get(depth, 0) + 1)
 
         for depth in sorted(leaf_depth_counts):
             print(f"    depth {depth}: {leaf_depth_counts[depth]} leaf classes")
 
+        # Stocker le nombre final d'échantillons générés
+        self.final_sample_count = len(df)
+
 # Main execution (Unchanged)
 if __name__ == "__main__":
 
-    with open(CONFIG_PATH,"r",encoding="utf-8") as f:
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_data = (yaml.safe_load(f) or {})
 
     settings = Settings()
     engine = build_rag(settings)
 
-    with open(NESTED_DATA_PATH,"r",encoding="utf-8") as f:
+    with open(NESTED_DATA_PATH, "r", encoding="utf-8") as f:
         nested_structure = json.load(f)
 
     generator = (StratifiedQAGenerator(rag_engine=engine, nested_data=nested_structure, config=config_data))
