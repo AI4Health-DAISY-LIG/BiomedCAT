@@ -27,7 +27,21 @@ MODEL_NAME = "gemma4:e4b-it-qat"
 # Set up module logger
 logger = logging.getLogger(__name__)
 
-###################################################################################
+# ------------------------------------------------------------
+# Argument parsing (seed & optional target size override)
+# ------------------------------------------------------------
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--seed", type=int, default=77,
+                    help="Random seed used for sampling (default 77).")
+parser.add_argument("--target-size", type=int, default=None,
+                    help="Override dataset.target_size from the YAML configuration.")
+args = parser.parse_args()
+
+RANDOM_SEED = args.seed
+
+# ============================================================
 # ------------------------------------------------------------
 # Dataset design (Controlled Batch Iteration)
 # ------------------------------------------------------------
@@ -36,8 +50,6 @@ TARGET_PER_CLASS = 30
 
 BATCH_SIZE = 5  # Reduced batch size for better control and diversity
 MAX_ATTEMPTS_PER_CLASS = 12  # Increased attempts to compensate for smaller batches
-
-RANDOM_SEED = 77
 
 # These are structural ontology nodes, NOT entity classes
 # that should receive generated examples.
@@ -452,6 +464,12 @@ class StratifiedQAGenerator:
 
             # Update collected samples
             for sample in newly_accepted_samples:
+                # Build a simple context string (definition + first child example if available)
+                example = ""
+                if rag_context.get("children"):
+                    example = rag_context["children"][0]
+                context = f"Definition: {definition}. Example: {example}."
+
                 collected.append({
                     "query": sample["query"],
                     "expected_class": class_name,
@@ -467,7 +485,8 @@ class StratifiedQAGenerator:
                     ),
                     # Phase 3.1: Tracking generation context
                     "generation_attempt": attempts,
-                    "rag_context_used": rag_context  # Store constraints used for traceability
+                    "rag_context_used": rag_context,  # Store constraints used for traceability
+                    "context": context,               # NEW column with enriched context
                 })
 
             logger.info(f"  -> Accepted {len(newly_accepted_samples)} new unique samples.")
@@ -577,6 +596,9 @@ class StratifiedQAGenerator:
         df = df.sort_values(by=["expected_class", "query", ], kind="stable").reset_index(drop=True)
         df["sample_id"] = [f"sample_{i:06d}" for i in range(1, len(df) + 1,)]
 
+        # Store the final dataframe for external access (e.g., save_split)
+        self.df = df
+
         # Validate.
         self._validate_dataset(df)
 
@@ -611,6 +633,16 @@ class StratifiedQAGenerator:
         # Stocker le nombre final d'échantillons générés
         self.final_sample_count = len(df)
 
+    # -----------------------------------------------------------------
+    # Helper to save a split (used by external wrapper or CLI)
+    # -----------------------------------------------------------------
+    def save_split(self, df: pd.DataFrame, split_name: str):
+        out_dir = Path("data/large_splits") / split_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = out_dir / "qa_dataset.parquet"
+        df.to_parquet(parquet_path, engine="pyarrow", index=False)
+        logger.info(f"[+] Split {split_name} saved to {parquet_path}")
+
 # Main execution (Unchanged)
 if __name__ == "__main__":
 
@@ -618,6 +650,10 @@ if __name__ == "__main__":
 
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_data = (yaml.safe_load(f) or {})
+
+    # Override target size if CLI argument provided
+    if args.target_size:
+        config_data.setdefault("dataset", {})["target_size"] = args.target_size
 
     settings = Settings()
     engine = build_rag(settings)

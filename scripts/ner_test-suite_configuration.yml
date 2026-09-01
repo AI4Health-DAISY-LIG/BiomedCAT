@@ -1,10 +1,10 @@
 dataset:
-  target_size: 4000
+  target_size: 40000
 
 constraints:
   leaf_class:
     enabled: true
-    min: 100
+    min: 30
     target: 200
 
   hierarchy_depth:
@@ -26,3 +26,7 @@ constraints:
     categories:
       common: 0.50
       uncommon: 0.50
+
+  frequency_balancing:
+    enabled: true
+    inverse_freq_exponent: 0.7
