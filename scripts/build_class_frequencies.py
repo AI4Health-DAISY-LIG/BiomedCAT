@@ -98,16 +98,8 @@ def _retry(func):
         return None
     return wrapper
 
-# @_retry
-# def fetch_pubmed_ids(term: str = "cancer", max_ids: int = MAX_ABSTRACTS) -> list[str]:
-#     """Retourne une liste de PMIDs (strings)."""
-#     handle = Entrez.esearch(db="pubmed", term=term, retmax=max_ids, usehistory="y")
-#     record = Entrez.read(handle)
-#     handle.close()
-#     return record["IdList"]
-
 @_retry
-def fetch_abstracts_batch(pmids: list[str]) -> list[str]:
+def fetch_abstract_batch(pmids: list[str]) -> list[str]:
     """Récupère les résumés (texte brut) pour un lot de PMIDs."""
     handle = Entrez.efetch(db="pubmed", id=pmids, rettype="abstract", retmode="text")
     raw = handle.read()
@@ -115,13 +107,13 @@ def fetch_abstracts_batch(pmids: list[str]) -> list[str]:
     # Entrez renvoie les abstracts concaténés, séparés par deux sauts de ligne
     return [a.strip() for a in raw.split("\n\n") if a.strip()]
 
-def fetch_all_abstracts(pmids: list[str]) -> list[str]:
+def fetch_all_abstract_s(pmids: list[str]) -> list[str]:
     """Itère sur les PMIDs par BATCH_SIZE et agrège les abstracts."""
-    abstracts = []
+    abstract_s = []
     for start in range(0, len(pmids), BATCH_SIZE):
         batch = pmids[start:start + BATCH_SIZE]
-        abstracts.extend(fetch_abstracts_batch(batch))
-    return abstracts
+        abstract_s.extend(fetch_abstract_batch(batch))
+    return abstract_s
 
 def fetch_pmids_by_mesh_category(
     categories: list[str],
@@ -135,7 +127,7 @@ def fetch_pmids_by_mesh_category(
     all_ids: set[str] = set()
     for cat in categories:
         # Le caractère * agit comme joker sur le tree‑number MeSH
-        query = f'"{cat}*"[MeSH Terms]'
+        query = f'"{cat}*" [MeSH Terms]'
         logger.debug(f"Recherche MeSH catégorie {cat!r} → {query}")
         handle = Entrez.esearch(
             db="pubmed",
@@ -150,11 +142,11 @@ def fetch_pmids_by_mesh_category(
         all_ids.update(ids)
     return list(all_ids)
 
-def map_term_to_class(term: str) -> str | None:
-    """Utilise le RAG pour obtenir le top 10 des classes les plus probables (reaching 98% recall)."""
+def map_term_to_class(term: str, top_k: int = 10) -> list[str] | None:
+    """Utilise le RAG pour obtenir les N classes les plus probables."""
     try:
-        top = rag_engine.search(term, top_k=1)
-        return top[0] if top else None
+        top = rag_engine.search(term, top_k=top_k)
+        return top if top else None
     except Exception:
         return None
 
@@ -169,9 +161,14 @@ def count_classes(texts: list[str]) -> Counter:
         for term, _sentence in candidates:
             # Nettoyage éventuel du terme (ex. caractères spéciaux)
             clean_term = re.sub(r"[\\n\\r]+", " ", term).strip()
-            cls = map_term_to_class(clean_term)
-            if cls:
-                freq[cls] += 1
+            
+            # Récupérer la liste des classes probables
+            cls_candidates = map_term_to_class(clean_term, top_k=10) 
+
+            if cls_candidates:
+                # Incrémenter le compteur pour CHAQUE classe candidate
+                for cls in cls_candidates:
+                    freq[cls] += 1
     return freq
 
 # -------------------------------------------------------------------------
@@ -186,11 +183,11 @@ def main():
     logger.info(f"    → {len(pmids)} unique PMIDs.")
 
     logger.info("[*] Téléchargement des abstracts …")
-    abstracts = fetch_all_abstracts(pmids)
-    logger.info(f"    → {len(abstracts)} abstracts chargés.")
+    abstract_s = fetch_all_abstract_s(pmids)
+    logger.info(f"    → {len(abstract_s)} abstracts chargés.")
 
     logger.info("[*] Comptage des classes Biolink …")
-    class_counts = count_classes(abstracts)
+    class_counts = count_classes(abstract_s)
 
     # Export JSON (compte brut)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
