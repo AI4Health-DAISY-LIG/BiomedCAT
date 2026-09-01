@@ -4,16 +4,16 @@
 """
 build_class_frequencies.py
 
-Génère data/biolink_class_frequencies.json à partir d’un corpus PubMed.
+Génère data/biolink_class_frequencies.json à partir d'un corpus PubMed.
 Le script :
 
-1️⃣ récupère N abstracts (par défaut 10 000) via Entrez,
+1️⃣ récupère N abstracts (par défaut 10,000) via Entrez,
 2️⃣ extrait les entités biomédicales avec le NER Agent déjà présent,
 3️⃣ mappe chaque entité à la classe Biolink la plus probable (RAG.search),
 4️⃣ agrège les comptes et écrit le JSON.
 
-Utilisation :
-    export MAX_ABSTRACTS=15000   # (optionnel) nombre d’abstraits à analyser
+Utilisation:
+    export MAX_ABSTRACTS=15000   # (optionnel) nombre d'abstraits à analyser
     python scripts/build_class_frequencies.py
 """
 
@@ -29,12 +29,23 @@ from biomedcat.config import Settings
 from biomedcat.stages.rag_engine import build_rag
 from biomedcat.stages.ner_agent import NERAgentPipeline
 import logging
+from dotenv import load_dotenv
 
 # -------------------------------------------------------------------------
 # 1️⃣  Paramètres (modifiable via variables d’environnement)
 # -------------------------------------------------------------------------
 # Adresse e‑mail obligatoire pour Entrez (NCBI)
-Entrez.email = "my-email@my-institution.org"
+BASE_DIR = Path(__file__).resolve().parent.parent   # root
+dotenv_path = BASE_DIR / ".env"
+load_dotenv(dotenv_path)
+ENTREZ_EMAIL = os.getenv("ENTREZ_EMAIL")   # le nom que vous avez mis dans .env                                                                                                                  
+if not ENTREZ_EMAIL:                                                                                                                                                                             
+    # Si la variable n’est pas définie, on lève une erreur claire                                                                                                                                
+    raise RuntimeError(
+        "Variable d’environnement ENTREZ_EMAIL non définie."
+        "Créez un fichier .env à la racine du projet contenant:"
+        "ENTREZ_EMAIL=votre.adresse@exemple.org")
+Entrez.email = ENTREZ_EMAIL
 Entrez.tool = "biomedcat_frequencies"
 
 MAX_ABSTRACTS = int(os.getenv("MAX_ABSTRACTS", "10000"))   # nb d’abstraits à récupérer
@@ -47,7 +58,7 @@ OUTPUT_PATH   = Path("data/biolink_class_frequencies.json")
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
-# 2️⃣  Initialisation des composants du pipeline
+# 2️. Initialisation des composants du pipeline
 # -------------------------------------------------------------------------
 settings = Settings()
 rag_engine = build_rag(settings)   # moteur hybride dense+BM25
@@ -58,7 +69,7 @@ ner_agent = NERAgentPipeline(
 )
 
 # -------------------------------------------------------------------------
-# 3️⃣  Fonctions utilitaires
+# 3.Fonctions utilitaires
 # -------------------------------------------------------------------------
 def _retry(func):
     """Décorateur simple de retry avec back‑off exponentiel."""
@@ -124,7 +135,7 @@ def count_classes(texts: list[str]) -> Counter:
     return freq
 
 # -------------------------------------------------------------------------
-# 4️⃣  Exécution principale
+# 4.Exécution principale
 # -------------------------------------------------------------------------
 def main():
     logger.info("[*] Récupération des PMIDs PubMed …")
