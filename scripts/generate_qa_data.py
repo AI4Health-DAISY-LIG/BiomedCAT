@@ -3,6 +3,7 @@ import random
 import yaml
 import ollama
 import pandas as pd
+from openai import OpenAI # Import for OpenAI compatibility
 
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -223,15 +224,44 @@ class StratifiedQAGenerator:
             },
         }
 
-        try:
-            # Using ollama.chat as per original implementation structure
+        # --- LLM Client Abstraction Logic ---
+        llm_cfg = self.config.get("llm", {})
+        use_openai_compatible = llm_cfg.get("use_openai_compatible", False)
+        model_to_use = MODEL_NAME # Default model name
+
+        if use_openai_compatible:
+            client = OpenAI(
+                api_key=llm_cfg["api_key"], 
+                base_url=llm_cfg.get("base_url", "http://localhost:8080/v1") # Default base URL if not provided
+            )
+            # Note: We use the model name defined in config or default to MODEL_NAME
+            model_to_use = llm_cfg.get("model", MODEL_NAME)
+
+            try:
+                response = client.chat.completions.create(
+                    model=model_to_use,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"} # OpenAI uses response_format for JSON output
+                )
+                # The structure of the response content differs from Ollama
+                content = response.choices[0].message.content
+            except Exception as e:
+                print(f"  [!] OpenAI generation error for {class_name}: {e}")
+                return []
+
+        else:
+            # Fallback to Ollama implementation (Original logic)
             response = ollama.chat(
                 model=MODEL_NAME,
-                format=schema,
+                format=schema, # Note: Ollama format parameter is used here
                 messages=[{"role": "user", "content": prompt}],
             )
 
             content = response["message"]["content"]
+        # --- End LLM Client Abstraction Logic ---
+
+
+        try:
             data = json.loads(content)
             if not isinstance(data, list):
                 return []
@@ -247,7 +277,7 @@ class StratifiedQAGenerator:
             return valid_batch
 
         except Exception as e:
-            print(f"  [!] Generation error for {class_name}: {e}")
+            print(f"  [!] Parsing error for {class_name}: {e}")
             return []
 
 
