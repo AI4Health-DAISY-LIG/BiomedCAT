@@ -21,6 +21,7 @@ import os
 import json
 import time
 import math
+import re  # ← ajouté pour nettoyer d'éventuels caractères spéciaux
 from pathlib import Path
 from collections import Counter
 from tqdm import tqdm
@@ -53,6 +54,16 @@ BATCH_SIZE    = int(os.getenv("BATCH_SIZE", "100"))       # nb d’IDs par appel
 RETRY_COUNT   = int(os.getenv("RETRY_COUNT", "3"))       # retries sur les appels HTTP
 RETRY_DELAY   = float(os.getenv("RETRY_DELAY", "1.0"))   # délai initial (s) entre retries
 OUTPUT_PATH   = Path("data/biolink_class_frequencies.json")
+
+# --------------------------------------------------------------
+# 3️⃣  Catégories MeSH à interroger (A → E, G)
+# --------------------------------------------------------------
+# Chaque préfixe correspond à un « tree number » de MeSH.
+# Exemple : "A*" → Anatomie, "C*" → Maladies, etc.
+MESH_CATEGORIES = ["A", "B", "C", "D", "E", "G"]
+
+# Valeur par défaut = 800 abstracts par catégorie (modifiable via .env)
+MESH_PER_CATEGORY = int(os.getenv("MESH_PER_CATEGORY", "800"))
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -112,6 +123,33 @@ def fetch_all_abstracts(pmids: list[str]) -> list[str]:
         abstracts.extend(fetch_abstracts_batch(batch))
     return abstracts
 
+def fetch_pmids_by_mesh_category(
+    categories: list[str],
+    per_category: int = MESH_PER_CATEGORY,
+) -> list[str]:
+    """
+    Retourne une liste d'PMID uniques en interrogeant chaque catégorie
+    MeSH (ex. « A* », « C* »). Le même nombre d’identifiants est demandé
+    pour chaque catégorie afin d’obtenir un corpus équilibré.
+    """
+    all_ids: set[str] = set()
+    for cat in categories:
+        # Le caractère * agit comme joker sur le tree‑number MeSH
+        query = f'"{cat}*"[MeSH Terms]'
+        logger.debug(f"Recherche MeSH catégorie {cat!r} → {query}")
+        handle = Entrez.esearch(
+            db="pubmed",
+            term=query,
+            retmax=per_category,
+            usehistory="y",
+        )
+        record = Entrez.read(handle)
+        handle.close()
+        ids = record.get("IdList", [])
+        logger.info(f"Catégorie {cat}: {len(ids)} PMIDs récupérés")
+        all_ids.update(ids)
+    return list(all_ids)
+
 def map_term_to_class(term: str) -> str | None:
     """Utilise le RAG pour obtenir la classe la plus probable (top‑1)."""
     try:
@@ -129,7 +167,9 @@ def count_classes(texts: list[str]) -> Counter:
         if not candidates:
             continue
         for term, _sentence in candidates:
-            cls = map_term_to_class(term)
+            # Nettoyage éventuel du terme (ex. caractères spéciaux)
+            clean_term = re.sub(r"[\\n\\r]+", " ", term).strip()
+            cls = map_term_to_class(clean_term)
             if cls:
                 freq[cls] += 1
     return freq
@@ -138,9 +178,12 @@ def count_classes(texts: list[str]) -> Counter:
 # 4.Exécution principale
 # -------------------------------------------------------------------------
 def main():
-    logger.info("[*] Récupération des PMIDs PubMed …")
-    pmids = fetch_pubmed_ids()
-    logger.info(f"    → {len(pmids)} IDs récupérés.")
+    logger.info("[*] Récupération des PMIDs par catégorie MeSH …")
+    pmids = fetch_pmids_by_mesh_category(
+        MESH_CATEGORIES,
+        per_category=MESH_PER_CATEGORY,
+    )
+    logger.info(f"    → {len(pmids)} PMIDs uniques récupérés (équilibrés).")
 
     logger.info("[*] Téléchargement des abstracts …")
     abstracts = fetch_all_abstracts(pmids)
