@@ -57,9 +57,7 @@ class StratifiedQAGenerator:
         # Reproducibility.
         self.random = random.Random(RANDOM_SEED)
 
-        self._analyze_hierarchy()
 
-    # Hierarchy
     def _analyze_hierarchy(self):
         """
         Recursively analyze the nested ontology.
@@ -140,21 +138,68 @@ class StratifiedQAGenerator:
     # Sampling plan:
     def _get_sampling_plan(self):
         """
-        Determine which classes to sample and how many.
-        ... (omitted for brevity, logic remains same as original) ...
+        Determine which classes to sample and how many, incorporating quality constraints.
+        Returns a list of tuples: (class_name, target, style)
         """
-        sampling_cfg = self.config.get("sampling",{})
-        target_per_class = int(sampling_cfg.get("target_per_class",TARGET_PER_CLASS))
-        sample_leaves_only = sampling_cfg.get("sample_leaves_only",True)
+        dataset_cfg = self.config.get("dataset", {})
+        target_size = int(dataset_cfg.get("target_size", 4000))
 
-        classes = []
-        for class_name, metadata in (self.class_metadata.items()):
-            if (sample_leaves_only and not metadata["is_leaf"]):
+        # --- Contrôle de Profondeur (Hierarchy Depth) ---
+        depth_cfg = self.config.get("constraints", {}).get("hierarchy_depth", {})
+        bins = depth_cfg.get("bins", []) # Ex: [[1, 2], [3, 4]]
+
+        # Initialisation du plan de génération (classe -> {target, style})
+        generation_plan: Dict[str, Dict[str, Any]] = {}
+        total_planned_samples = 0
+
+        for class_name, metadata in self.class_metadata.items():
+            if not metadata["is_leaf"]:
                 continue
-            classes.append((class_name,target_per_class))
-        classes.sort(key=lambda x: x[0])
 
-        return classes
+            # Déterminer le target de base (par défaut)
+            base_target = int(self.config.get("constraints", {}).get("leaf_class", {}).get("target", TARGET_PER_CLASS))
+            
+            # --- LOGIQUE DE BIAIS PAR PROFONDEUR ---
+            depth = metadata["depth"]
+            adjusted_target = base_target
+
+            for bin_start, bin_end in bins:
+                if bin_start <= depth <= bin_end:
+                    # Exemple simple : si on est dans un bin ciblé, augmenter le target de 20%
+                    adjusted_target = int(base_target * 1.2) 
+                    break
+
+            # --- LOGIQUE DE STYLE (Ambiguity & Surface Form) ---
+            style_cfg = self.config.get("constraints", {}).get("ambiguity", {})
+            surface_cfg = self.config.get("constraints", {}).get("surface_form", {})
+            
+            required_style = {
+                "ambiguity": style_cfg.get("categories", {}).get("ambiguous") if style_cfg.get("enabled") else None,
+                "surface_form": surface_cfg.get("categories", {}).get("uncommon") if surface_cfg.get("enabled") else None
+            }
+
+            # Stockage du plan avec le style requis
+            generation_plan[class_name] = {
+                "target": adjusted_target,
+                "style": required_style
+            }
+            total_planned_samples += adjusted_target
+
+
+        # --- LOGIQUE DE CIBLE GLOBALE (Global Target Size) ---
+        if total_planned_samples > target_size:
+             print(f"[!] Warning: Total planned samples ({total_planned_samples}) exceeds global target size ({target_size}). Scaling down targets proportionally.")
+             scaling_factor = target_size / total_planned_samples
+             for class_name, plan in generation_plan.items():
+                 plan["target"] = int(plan["target"] * scaling_factor)
+
+        # Convertir le dictionnaire en liste de tuples pour l'itération (classe, target, style)
+        final_sampling_list = []
+        for class_name, plan in generation_plan.items():
+            final_sampling_list.append((class_name, plan["target"], plan["style"]))
+
+        return final_sampling_list
+
 
     # Definition lookup:
     def _get_definition(self,class_name: str) -> str:
@@ -165,12 +210,13 @@ class StratifiedQAGenerator:
         return (metadata.get("definition","") or "")
 
     # LLM generation (Batch implementation)
-    def _generate_batch(self, class_name: str, definition: str, n: int, rag_context: Dict[str, Any], negative_queries: List[str]) -> List[Dict[str, str]]:
+    def _generate_batch(self, class_name: str, definition: str, n: int, rag_context: Dict[str, Any], negative_queries: List[str], style: Dict[str, Any]) -> List[Dict[str, str]]:
         """
         Generates a batch of queries using LLM with structural constraints and negative filtering.
 
         rag_context: Structured data from RAG engine (parents, children, etc.).
         negative_queries: List of already seen query strings to avoid repetition.
+        style: Dictionary containing stylistic requirements (ambiguity, surface_form).
         """
         ancestors = self.class_metadata[class_name]["ancestors"]
         parent_context = ancestors[-1] if ancestors else "None"
@@ -193,18 +239,32 @@ class StratifiedQAGenerator:
         {negative_list if negative_list else 'None'}
         """
 
+        # --- NOUVEAU : Construction des instructions stylistiques basées sur le YAML ---
+        style_instructions = []
+        if style and style.get("ambiguity"):
+            level = "highly ambiguous" if style["ambiguity"] == 0.3 else "unambiguous" # Logique simple basée sur les catégories
+            style_instructions.append(f"The query must be {level} in its semantic scope.")
+
+        if style and style.get("surface_form"):
+            form = "common terminology" if style["surface_form"] == 0.5 else "uncommon or highly technical jargon"
+            style_instructions.append(f"Use language that reflects a {form} surface form.")
+        # --- FIN NOUVEAU ---
+
         prompt = f"""
                     You are a biomedical ontology expert generating high-quality evaluation data.
                     Your task is to generate exactly {n} DISTINCT biomedical entity mentions for the target class.
 
                     {rag_constraints}
                     {negative_constraints}
+                    
+                    --- STYLISTIC CONSTRAINTS ---
+                    {'\n'.join(style_instructions) if style_instructions else 'No specific stylistic constraints applied.'}
 
                     Requirements:
                     1. Each query must be 1-3 words long.
                     2. Use realistic, concrete biomedical terminology specific to "{class_name}".
                     3. The generated entities MUST belong to "{class_name}" and not its broader parent classes or unrelated concepts.
-                    4. Avoid generic or highly ambiguous terms.
+                    4. Avoid generic or highly ambiguous terms (unless explicitly requested).
                     5. Return ONLY a JSON array of objects with 'query' and 'expected_class'.
 
                     Example Output Format:
@@ -282,7 +342,7 @@ class StratifiedQAGenerator:
 
 
     # Generate one class (Iterative Controller)
-    def _generate_for_class(self,class_name: str,target: int) -> List[Dict[str, Any]]:
+    def _generate_for_class(self, class_name: str, target: int, style: Dict[str, Any]) -> List[Dict[str, Any]]:
 
         definition = self._get_definition(class_name)
         if not definition:
@@ -294,7 +354,7 @@ class StratifiedQAGenerator:
         seen_queries: set = set() # Set of normalized queries already collected
         attempts = 0
 
-        print(f"\n--- Starting generation for {class_name} (Target: {target}) ---")
+        print(f"\n--- Starting generation for {class_name} (Target: {target}, Style: {style}) ---")
 
         while len(collected) < target and attempts < MAX_ATTEMPTS_PER_CLASS:
             attempts += 1
@@ -310,16 +370,17 @@ class StratifiedQAGenerator:
                 print(f"  [!] Failed to retrieve RAG context for {class_name}: {e}. Skipping attempt.")
                 continue
 
-            # Phase 2.2: Get Negative Constraints (Anti-Bias)
+            # Phase 2.2/3.3: Get Negative Constraints (Anti-Bias)
             negative_queries = list(seen_queries)
 
-            # Phase 2.1: Generate Batch
+            # Phase 2.1: Générer Batch (Passage du style au générateur)
             generated_batch = self._generate_batch(
                 class_name=class_name,
                 definition=definition,
                 n=request_n,
                 rag_context=rag_context,
-                negative_queries=negative_queries
+                negative_queries=negative_queries,
+                style=style # Passage du style ici
             )
 
             newly_accepted_samples: List[Dict[str, Any]] = []
@@ -396,17 +457,19 @@ class StratifiedQAGenerator:
     # Main execution (Modified to use the new iterative generator)
     def run(self):
 
-        sampling_plan = (self._get_sampling_plan())
+        sampling_plan = self._get_sampling_plan() # Utilise le nouveau plan structuré
         print(f"\n[*] Leaf classes selected: {len(sampling_plan)}")
-        print(f"[*] Planned total samples: {sum(target for _, target in sampling_plan)}")
+        print(f"[*] Planned total samples: {sum(target for _, target, _ in sampling_plan)}")
 
-        # Generate iteratively:
-        for i, (class_name,target) in enumerate(sampling_plan,start=1):
+        # Générer itérativement :
+        for i, (class_name, target, style) in enumerate(sampling_plan, start=1): # Déstructuration du plan
             metadata = self.class_metadata[class_name]
             print(f"\n=====================================================")
             print(f"[{i}/{len(sampling_plan)}] Starting generation for: {class_name}")
-            print(f"Depth: {metadata['depth']}, Target: {target}, Batch Size: {BATCH_SIZE}")
-            samples = (self._generate_for_class(class_name=class_name, target=target))
+            print(f"Depth: {metadata['depth']}, Target: {target}, Style: {style}") # Affichage du style
+
+            # Appel de la méthode avec le target et le style
+            samples = (self._generate_for_class(class_name=class_name, target=target, style=style)) 
             self.all_samples.extend(samples)
 
         if not self.all_samples:
