@@ -28,6 +28,7 @@ from Bio import Entrez
 from biomedcat.config import Settings
 from biomedcat.stages.rag_engine import build_rag
 from biomedcat.stages.ner_agent import NERAgentPipeline
+import logging
 
 # -------------------------------------------------------------------------
 # 1️⃣  Paramètres (modifiable via variables d’environnement)
@@ -41,6 +42,9 @@ BATCH_SIZE    = int(os.getenv("BATCH_SIZE", "100"))       # nb d’IDs par appel
 RETRY_COUNT   = int(os.getenv("RETRY_COUNT", "3"))       # retries sur les appels HTTP
 RETRY_DELAY   = float(os.getenv("RETRY_DELAY", "1.0"))   # délai initial (s) entre retries
 OUTPUT_PATH   = Path("data/biolink_class_frequencies.json")
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
 # 2️⃣  Initialisation des composants du pipeline
@@ -66,7 +70,7 @@ def _retry(func):
             except Exception as e:
                 if attempt == RETRY_COUNT - 1:
                     raise
-                print(f"[!] {func.__name__} failed (attempt {attempt+1}/{RETRY_COUNT}): {e}")
+                logger.warning(f"[!] {func.__name__} failed (attempt {attempt+1}/{RETRY_COUNT}): {e}")
                 time.sleep(delay)
                 delay *= 2
         return None
@@ -123,15 +127,15 @@ def count_classes(texts: list[str]) -> Counter:
 # 4️⃣  Exécution principale
 # -------------------------------------------------------------------------
 def main():
-    print("[*] Récupération des PMIDs PubMed …")
+    logger.info("[*] Récupération des PMIDs PubMed …")
     pmids = fetch_pubmed_ids()
-    print(f"    → {len(pmids)} IDs récupérés.")
+    logger.info(f"    → {len(pmids)} IDs récupérés.")
 
-    print("[*] Téléchargement des abstracts …")
+    logger.info("[*] Téléchargement des abstracts …")
     abstracts = fetch_all_abstracts(pmids)
-    print(f"    → {len(abstracts)} abstracts chargés.")
+    logger.info(f"    → {len(abstracts)} abstracts chargés.")
 
-    print("[*] Comptage des classes Biolink …")
+    logger.info("[*] Comptage des classes Biolink …")
     class_counts = count_classes(abstracts)
 
     # Export JSON (compte brut)
@@ -141,12 +145,13 @@ def main():
 
     # Affichage de quelques stats rapides
     total = sum(class_counts.values())
-    print("\n[+] Fichier généré :", OUTPUT_PATH)
-    print(f"    Total d’occurrences comptées : {total}")
-    print(f"    Nombre de classes différentes : {len(class_counts)}")
-    print("\nTop‑10 classes (fréquence brute) :")
+    logger.info("\n[+] Fichier généré : %s", OUTPUT_PATH)
+    logger.info(f"    Total d’occurrences comptées : {total}")
+    logger.info(f"    Nombre de classes différentes : {len(class_counts)}")
+    logger.info("\nTop‑10 classes (fréquence brute) :")
     for cls, cnt in class_counts.most_common(10):
-        print(f"    {cls:30s} → {cnt}")
+        logger.info(f"    {cls:30s} → {cnt}")
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
     main()

@@ -10,11 +10,13 @@ import re
 import os
 import spacy
 import torch
+import logging
 
 # Désactiver les logs HTTP de huggingface_hub et httpx
-import logging
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
+logger = logging.getLogger(__name__)
 
 from biomedcat.config import Settings
 from biomedcat.stages.biolink_yml_processor import run_smart_update, biolink_yml_processor
@@ -33,7 +35,7 @@ class BiomedRAG:
 
         # Load Models
         # Bind embedding model                                                                                                                          
-        print(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")                                                                                                                          
+        logger.info(f"[*] Loading embedding model: {self.config.RAG_embedding_model}")
         
         # Utiliser directement l'embedding function de ChromaDB
         # Elle gérera automatiquement le caching via SentenceTransformers
@@ -42,11 +44,11 @@ class BiomedRAG:
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
 
-        print("[*] Loading scispaCy model for tokenization...")                                                                                                                            
+        logger.info("[*] Loading scispaCy model for tokenization...")
         try:                                                                                                                                                                               
             self.nlp = spacy.load("en_core_sci_sm")                                                                                                                                        
         except OSError:                                                                                                                                                                    
-            print("[!] scispaCy model not found. Falling back to basic tokenizer.")                                                                                                        
+            logger.warning("[!] scispaCy model not found. Falling back to basic tokenizer.")                                                                                                        
             self.nlp = None
 
         # Indexeurs
@@ -58,18 +60,18 @@ class BiomedRAG:
             self._load_data()
             self._setup_bm25()                                                                                                                                                                             
         else:                                                                                                                                                                                             
-            print("[!] Biolink data file not found. Indexing.")                                                                                                                    
+            logger.warning("[!] Biolink data file not found. Indexing.")                                                                                                                    
             self.flat_data = {}
             self.needs_reindexing = True                                                                                                                                                             
                                                                                                                                                                                                           
         # Indexation                                                                                                                                                                        
         if self.needs_reindexing:                                                                                                                                                                         
-            print("[*] Reconstruction de l'index ChromaDB en cours...")
+            logger.info("[*] Reconstruction de l'index ChromaDB en cours...")
             self._build_chroma_index()
             self._setup_bm25()                                                                                                                               
             # self.build_indices()                                                                                                                                                                          
         else:                                                                                                                                                                                             
-            print("[*] ChromaDB doesn't need existing, charging existing DB.")
+            logger.info("[*] ChromaDB doesn't need existing, charging existing DB.")
             if not hasattr(self, 'bm25') or self.bm25 is None:                                                                                                                                 
                 self._setup_bm25()
 
@@ -121,7 +123,7 @@ class BiomedRAG:
         if not self.flat_data:                                                                                                                                                                 
             return                                                                                                                                                                             
                                                                                                                                                                                             
-        print("[*] Initializing BM25 index...")                                                                                                                                                
+        logger.info("[*] Initializing BM25 index...")                                                                                                                                                
         bm25_corpus_tokens = []                                                                                                                                                                
         self._bm25_corpus_map = []                                                                                                                                                             
                                                                                                                                                                                             
@@ -142,7 +144,7 @@ class BiomedRAG:
 
     def _build_chroma_index(self) -> None:
         """Construit les index ChromaDB (Dense) et BM21/BM25 (Sparse)."""
-        print(f"[*] Indexation starts for {len(self.flat_data)} classes...")
+        logger.info(f"[*] Indexation starts for {len(self.flat_data)} classes...")
         
         dense_ids = []
         dense_documents = []
@@ -168,7 +170,7 @@ class BiomedRAG:
                 metadatas=dense_metadatas
             )
 
-        print("[+] Indexation : done.")
+        logger.info("[+] Indexation : done.")
 
     def search(self, query: str, top_k: int = 5) -> List[str]:
         """
@@ -189,7 +191,7 @@ class BiomedRAG:
             # query_res['ids'] est une liste de listes [[id1, id2...]]
             dense_results = query_res['ids'][0] if query_res['ids'] else []
         except Exception as e:
-            print(f"[!] Erreur recherche Dense : {e}")
+            logger.error(f"[!] Erreur recherche Dense : {e}")
 
         # --- 2. Recherche Sparse (BM25) ---
         sparse_results = []
@@ -255,7 +257,7 @@ def build_rag(settings: str = Settings()):
     # 2. Initialize RAG                                                                                                                                  
     rag_engine = BiomedRAG(settings, force_rebuild=was_updated)                                                                                                                                           
                                                                                                                                                                                                           
-    print("[+] RAG ready.")
+    logger.info("[+] RAG ready.")
     return rag_engine                                                                                                                                                                     
 
 if __name__ == "__main__":                                                                                                                                                                                

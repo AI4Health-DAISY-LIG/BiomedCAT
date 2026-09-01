@@ -4,6 +4,7 @@ import yaml
 import ollama
 import pandas as pd
 from openai import OpenAI  # Import for OpenAI compatibility
+import logging
 
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
@@ -12,7 +13,6 @@ from typing import List, Dict, Any, Tuple
 from biomedcat.stages.rag_engine import build_rag
 from biomedcat.config import Settings
 
-
 # ============================================================
 # Configuration
 # ============================================================
@@ -20,8 +20,12 @@ from biomedcat.config import Settings
 CONFIG_PATH = Path("scripts/ner_test-suite_configuration.yml")
 NESTED_DATA_PATH = Path("data/biolink_classes_nested.json")
 OUTPUT_PARQUET = Path("data/qa_dataset.parquet")
+FREQUENCY_PATH = Path("data/biolink_class_frequencies.json")
 
 MODEL_NAME = "gemma4:e4b-it-qat"
+
+# Set up module logger
+logger = logging.getLogger(__name__)
 
 ###################################################################################
 # ------------------------------------------------------------
@@ -38,7 +42,6 @@ RANDOM_SEED = 77
 # These are structural ontology nodes, NOT entity classes
 # that should receive generated examples.
 EXCLUDED_CLASSES = {"entity", "named thing"}
-
 
 class StratifiedQAGenerator:
 
@@ -57,13 +60,23 @@ class StratifiedQAGenerator:
         # Reproducibility.
         self.random = random.Random(RANDOM_SEED)
 
+        # Load class frequencies (if available) for inverse‑frequency balancing
+        self.class_frequencies: Dict[str, int] = {}
+        if FREQUENCY_PATH.is_file():
+            try:
+                with open(FREQUENCY_PATH, "r", encoding="utf-8") as f:
+                    self.class_frequencies = json.load(f)
+                logger.info(f"[+] Loaded class frequencies from {FREQUENCY_PATH}")
+            except Exception as e:
+                logger.warning(f"[!] Could not load frequencies: {e}")
+
     def _analyze_hierarchy(self):
         """
         Recursively analyze the nested ontology.
         ... (omitted for brevity, logic remains same as original) ...
         """
 
-        print("[*] Analyzing hierarchy...")
+        logger.info("[*] Analyzing hierarchy...")
         self.class_metadata = {}
         def traverse(node_name: str, node_data: Dict[str, Any], depth: int, ancestors: List[str]):
             children = node_data.get("children", {})
@@ -99,21 +112,21 @@ class StratifiedQAGenerator:
         traverse(node_name=root_name, node_data=self.nested_data[root_name], depth=0, ancestors=[])
 
         # Report before exclusion:
-        print(f"[*] Total nodes including wrappers: {len(self.class_metadata)}")
+        logger.info(f"[*] Total nodes including wrappers: {len(self.class_metadata)}")
 
         # Remove structural nodes from sampling metadata:
         for excluded in EXCLUDED_CLASSES:
             if excluded in self.class_metadata:
-                print(f"[*] Excluding structural class: {excluded}")
+                logger.info(f"[*] Excluding structural class: {excluded}")
                 del self.class_metadata[excluded]
 
         # Count actual entity classes:
         sampleable_classes = [name for name in self.class_metadata]
-        print(f"[*] Sampleable entity classes: {len(sampleable_classes)}")
+        logger.info(f"[*] Sampleable entity classes: {len(sampleable_classes)}")
 
         # Leaf statistics:
         leaf_classes = [name for name, metadata in self.class_metadata.items() if metadata["is_leaf"]]
-        print(f"[*] Leaf classes: {len(leaf_classes)}")
+        logger.info(f"[*] Leaf classes: {len(leaf_classes)}")
 
         # Depth statistics:
         depth_counts = {}
@@ -121,9 +134,9 @@ class StratifiedQAGenerator:
             depth = metadata["depth"]
             depth_counts[depth] = (depth_counts.get(depth, 0) + 1)
 
-        print("[*] Classes by depth:")
+        logger.info("[*] Classes by depth:")
         for depth in sorted(depth_counts):
-            print(f"depth {depth}: {depth_counts[depth]}")
+            logger.info(f"depth {depth}: {depth_counts[depth]}")
 
     # Configuration helpers:
     def _get_sampling_config(self) -> Dict[str, Any]:
@@ -146,6 +159,11 @@ class StratifiedQAGenerator:
         depth_cfg = self.config.get("constraints", {}).get("hierarchy_depth", {})
         bins = depth_cfg.get("bins", [])  # Ex: [[1, 2], [3, 4]]
 
+        # Frequency balancing config
+        freq_cfg = self.config.get("frequency_balancing", {})
+        freq_enabled = freq_cfg.get("enabled", False)
+        freq_exponent = float(freq_cfg.get("inverse_freq_exponent", 0.0))
+
         # Initialisation du plan de génération (classe -> {target, style})
         generation_plan: Dict[str, Dict[str, Any]] = {}
         total_planned_samples = 0
@@ -167,14 +185,40 @@ class StratifiedQAGenerator:
                     adjusted_target = int(base_target * 1.2)
                     break
 
+            # --- FREQUENCY BALANCING (inverse frequency) ---
+            if freq_enabled and self.class_frequencies:
+                max_freq = max(self.class_frequencies.values())
+                class_freq = self.class_frequencies.get(class_name, 1)
+                # Avoid division by zero
+                factor = (max_freq / max(class_freq, 1)) ** freq_exponent
+                adjusted_target = max(1, int(adjusted_target * factor))
+
             # --- LOGIQUE DE STYLE (Ambiguity & Surface Form) ---
             style_cfg = self.config.get("constraints", {}).get("ambiguity", {})
             surface_cfg = self.config.get("constraints", {}).get("surface_form", {})
 
             required_style = {
-                "ambiguity": style_cfg.get("categories", {}).get("ambiguous") if style_cfg.get("enabled") else None,
-                "surface_form": surface_cfg.get("categories", {}).get("uncommon") if surface_cfg.get("enabled") else None
+                "ambiguity": None,
+                "surface_form": None
             }
+
+            # Ambiguity style selection based on weighted categories
+            if style_cfg.get("enabled"):
+                categories = style_cfg.get("categories", {})
+                if categories:
+                    choices = list(categories.keys())
+                    weights = list(categories.values())
+                    chosen = self.random.choices(choices, weights=weights, k=1)[0]
+                    required_style["ambiguity"] = chosen  # "ambiguous" or "unambiguous"
+
+            # Surface form style selection
+            if surface_cfg.get("enabled"):
+                categories = surface_cfg.get("categories", {})
+                if categories:
+                    choices = list(categories.keys())
+                    weights = list(categories.values())
+                    chosen = self.random.choices(choices, weights=weights, k=1)[0]
+                    required_style["surface_form"] = chosen  # "common" or "uncommon"
 
             # Stockage du plan avec le style requis
             generation_plan[class_name] = {
@@ -185,10 +229,10 @@ class StratifiedQAGenerator:
 
         # --- LOGIQUE DE CIBLE GLOBALE (Global Target Size) ---
         if total_planned_samples > target_size:
-            print(f"[!] Warning: Total planned samples ({total_planned_samples}) exceeds global target size ({target_size}). Scaling down targets proportionally.")
+            logger.warning(f"[!] Warning: Total planned samples ({total_planned_samples}) exceeds global target size ({target_size}). Scaling down targets proportionally.")
             scaling_factor = target_size / total_planned_samples
             for class_name, plan in generation_plan.items():
-                plan["target"] = int(plan["target"] * scaling_factor)
+                plan["target"] = max(1, int(plan["target"] * scaling_factor))
 
         # Convertir le dictionnaire en liste de tuples pour l'itération (classe, target, style)
         final_sampling_list = []
@@ -238,13 +282,13 @@ class StratifiedQAGenerator:
 
         # --- NOUVEAU : Construction des instructions stylistiques basées sur le YAML ---
         style_instructions = []
-        if style and style.get("ambiguity"):
-            level = "highly ambiguous" if style["ambiguity"] == 0.3 else "unambiguous"  # Logique simple basée sur les catégories
-            style_instructions.append(f"The query must be {level} in its semantic scope.")
-
-        if style and style.get("surface_form"):
-            form = "common terminology" if style["surface_form"] == 0.5 else "uncommon or highly technical jargon"
-            style_instructions.append(f"Use language that reflects a {form} surface form.")
+        if style:
+            if style.get("ambiguity"):
+                level = "highly ambiguous" if style["ambiguity"] == "ambiguous" else "unambiguous"
+                style_instructions.append(f"The query must be {level} in its semantic scope.")
+            if style.get("surface_form"):
+                form = "common terminology" if style["surface_form"] == "common" else "uncommon or highly technical jargon"
+                style_instructions.append(f"Use language that reflects a {form} surface form.")
         # --- FIN NOUVEAU ---
 
         prompt = f"""
@@ -298,23 +342,36 @@ class StratifiedQAGenerator:
                 response = client.chat.completions.create(
                     model=model_to_use,
                     messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}  # OpenAI uses response_format for JSON output
+                    response_format={"type": "json_object"},
+                    # Seed for reproducibility if supported
+                    **({"seed": RANDOM_SEED} if hasattr(client, "seed") else {})
                 )
                 # The structure of the response content differs from Ollama
                 content = response.choices[0].message.content
             except Exception as e:
-                print(f"  [!] OpenAI generation error for {class_name}: {e}")
+                logger.error(f"  [!] OpenAI generation error for {class_name}: {e}")
                 return []
 
         else:
             # Fallback to Ollama implementation (Original logic)
-            response = ollama.chat(
-                model=MODEL_NAME,
-                format=schema,  # Note: Ollama format parameter is used here
-                messages=[{"role": "user", "content": prompt}],
-            )
+            payload = {
+                "model": MODEL_NAME,
+                "prompt": prompt.strip(),
+                "format": schema,
+                "stream": False,
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 800,
+                    "seed": RANDOM_SEED  # Ensure deterministic output when possible
+                }
+            }
+            try:
+                response = ollama.generate(**payload)
+                content = response.get("response", "")
+            except Exception as e:
+                logger.error(f"  [!] Ollama generation error for {class_name}: {e}")
+                return []
 
-            content = response["message"]["content"]
         # --- End LLM Client Abstraction Logic ---
 
         try:
@@ -333,7 +390,7 @@ class StratifiedQAGenerator:
             return valid_batch
 
         except Exception as e:
-            print(f"  [!] Parsing error for {class_name}: {e}")
+            logger.error(f"  [!] Parsing error for {class_name}: {e}")
             return []
 
     # Generate one class (Iterative Controller)
@@ -341,7 +398,7 @@ class StratifiedQAGenerator:
 
         definition = self._get_definition(class_name)
         if not definition:
-            print(f"[!] No definition for {class_name}")
+            logger.warning(f"[!] No definition for {class_name}")
             return []
 
         metadata = self.class_metadata[class_name]
@@ -349,20 +406,20 @@ class StratifiedQAGenerator:
         seen_queries: set = set()  # Set of normalized queries already collected
         attempts = 0
 
-        print(f"\n--- Starting generation for {class_name} (Target: {target}, Style: {style}) ---")
+        logger.info(f"\n--- Starting generation for {class_name} (Target: {target}, Style: {style}) ---")
 
         while len(collected) < target and attempts < MAX_ATTEMPTS_PER_CLASS:
             attempts += 1
             remaining = target - len(collected)
             request_n = min(BATCH_SIZE, remaining)
 
-            print(f"  [Attempt {attempts}/{MAX_ATTEMPTS_PER_CLASS}] Requesting {request_n} samples...")
+            logger.debug(f"  [Attempt {attempts}/{MAX_ATTEMPTS_PER_CLASS}] Requesting {request_n} samples...")
 
             # Phase 2.2: Get RAG Context (Positive Constraints)
             try:
                 rag_context = self.rag_engine.get_context(class_names=[class_name])
             except Exception as e:
-                print(f"  [!] Failed to retrieve RAG context for {class_name}: {e}. Skipping attempt.")
+                logger.error(f"  [!] Failed to retrieve RAG context for {class_name}: {e}. Skipping attempt.")
                 continue
 
             # Phase 2.2/3.3: Get Negative Constraints (Anti-Bias)
@@ -385,8 +442,13 @@ class StratifiedQAGenerator:
 
                 # Phase 2.2/3.3: Validation and Filtering (Strict Uniqueness)
                 if key not in seen_queries:
-                    seen_queries.add(key)
-                    newly_accepted_samples.append(sample)
+                    # Additional verification: ensure the query maps back to the target class via RAG
+                    top = self.rag_engine.search(query, top_k=1)
+                    if top and top[0] == class_name:
+                        seen_queries.add(key)
+                        newly_accepted_samples.append(sample)
+                    else:
+                        logger.debug(f"    [Reject] Query '{query}' did not map back to class {class_name} (got {top}).")
 
             # Update collected samples
             for sample in newly_accepted_samples:
@@ -408,19 +470,19 @@ class StratifiedQAGenerator:
                     "rag_context_used": rag_context  # Store constraints used for traceability
                 })
 
-            print(f"  -> Accepted {len(newly_accepted_samples)} new unique samples.")
-            print(f"  Current total: {len(collected)} / {target}")
+            logger.info(f"  -> Accepted {len(newly_accepted_samples)} new unique samples.")
+            logger.info(f"  Current total: {len(collected)} / {target}")
 
         if len(collected) < target:
-            print(f"[!] Generation finished. Only generated {len(collected)} / {target} for {class_name}. Max attempts reached or no new unique samples found.")
+            logger.warning(f"[!] Generation finished. Only generated {len(collected)} / {target} for {class_name}. Max attempts reached or no new unique samples found.")
 
         return collected
 
     # Final dataset validation (Unchanged)
     def _validate_dataset(self, df: pd.DataFrame):
-        print("\n[*] Dataset validation")
-        print(f"Total samples: {len(df)}")
-        print(f"Unique classes: {df['expected_class'].nunique()}")
+        logger.info("\n[*] Dataset validation")
+        logger.info(f"Total samples: {len(df)}")
+        logger.info(f"Unique classes: {df['expected_class'].nunique()}")
 
         sampling_cfg = (self._get_sampling_config())
         minimum = int(sampling_cfg.get("min_per_leaf"))
@@ -435,24 +497,24 @@ class StratifiedQAGenerator:
             if count < minimum:
                 missing.append((class_name, count,))
         if missing:
-            print(f"    [!] {len(missing)} leaf classes below minimum {minimum}")
+            logger.warning(f"    [!] {len(missing)} leaf classes below minimum {minimum}")
             for class_name, count in missing:
-                print(f" {class_name}: {count}/{minimum}")
+                logger.warning(f" {class_name}: {count}/{minimum}")
         else:
-            print(f"[+] All leaf classes meet minimum {minimum}")
+            logger.info(f"[+] All leaf classes meet minimum {minimum}")
 
         # Depth distribution.
-        print("\nSamples by depth:")
+        logger.info("\nSamples by depth:")
         depth_counts = (df["depth"].value_counts().sort_index())
         for depth, count in depth_counts.items():
-            print(f"depth {depth}: {count}")
+            logger.info(f"depth {depth}: {count}")
 
     # Main execution (Modified to use the new iterative generator)
     def run(self):
 
         sampling_plan = self._get_sampling_plan()  # Utilise le nouveau plan structuré
-        print(f"\n[*] Leaf classes selected: {len(sampling_plan)}")
-        print(f"[*] Planned total samples: {sum(target for _, target, _ in sampling_plan)}")
+        logger.info(f"\n[*] Leaf classes selected: {len(sampling_plan)}")
+        logger.info(f"[*] Planned total samples: {sum(target for _, target, _ in sampling_plan)}")
 
         # Définir la cible globale d'échantillons
         global_target = int(self.config.get("dataset", {}).get("target_size", 4000))
@@ -460,9 +522,9 @@ class StratifiedQAGenerator:
         # Générer itérativement :
         for i, (class_name, target, style) in enumerate(sampling_plan, start=1):  # Déstructuration du plan
             metadata = self.class_metadata[class_name]
-            print(f"\n=====================================================")
-            print(f"[{i}/{len(sampling_plan)}] Starting generation for: {class_name}")
-            print(f"Depth: {metadata['depth']}, Target: {target}, Style: {style}")  # Affichage du style
+            logger.info(f"\n=====================================================")
+            logger.info(f"[{i}/{len(sampling_plan)}] Starting generation for: {class_name}")
+            logger.info(f"Depth: {metadata['depth']}, Target: {target}, Style: {style}")  # Affichage du style
 
             # Appel de la méthode avec le target et le style
             samples = (self._generate_for_class(class_name=class_name, target=target, style=style))
@@ -472,13 +534,13 @@ class StratifiedQAGenerator:
             # Vérification de la cible globale après chaque classe générée
             # -----------------------------------------------------------------
             if len(self.all_samples) >= global_target:
-                print(f"\n[+] Objectif global de {global_target} échantillons atteint. Arrêt de la génération.")
+                logger.info(f"\n[+] Objectif global de {global_target} échantillons atteint. Arrêt de la génération.")
                 # Troncature éventuelle pour ne pas dépasser le quota
                 self.all_samples = self.all_samples[:global_target]
                 break
 
         if not self.all_samples:
-            print("[!] No samples generated.")
+            logger.error("[!] No samples generated.")
             return
 
         # Final dataframe creation and deduplication (Unchanged logic)
@@ -488,10 +550,10 @@ class StratifiedQAGenerator:
         # Contrôle du nombre total d'échantillons par rapport à la cible globale
         # -----------------------------------------------------------------
         if len(df) > global_target:
-            print(f"\n[!] Le DataFrame contient {len(df)} lignes, supérieur au target global ({global_target}). Troncature appliquée.")
+            logger.warning(f"\n[!] Le DataFrame contient {len(df)} lignes, supérieur au target global ({global_target}). Troncature appliquée.")
             df = df.head(global_target)  # garde les premières lignes (déjà triées plus bas)
         elif len(df) < global_target:
-            print(f"\n[!] Le DataFrame ne contient que {len(df)} lignes, inférieur au target global ({global_target}).")
+            logger.warning(f"\n[!] Le DataFrame ne contient que {len(df)} lignes, inférieur au target global ({global_target}).")
 
         # Global deduplication based on normalized query
         df["query_normalized"] = (df["query"].str.strip().str.casefold())
@@ -500,12 +562,12 @@ class StratifiedQAGenerator:
         duplicate_count = int(duplicated_queries.sum())
 
         if duplicate_count:
-            print(f"\n[!] Found {duplicate_count} rows participating in cross-class duplicates.")
+            logger.warning(f"\n[!] Found {duplicate_count} rows participating in cross-class duplicates.")
             # Keep the first occurrence.
             df = df.drop_duplicates(subset=["query_normalized"], keep="first")
 
         after = len(df)
-        print(f"[*] Removed {before - after} duplicate rows globally.")
+        logger.info(f"[*] Removed {before - after} duplicate rows globally.")
 
         # Add stable sample ID and clean up columns
         df.insert(0, "sample_id", [f"sample_{i:06d}" for i in range(1, len(df) + 1,)],)
@@ -521,21 +583,21 @@ class StratifiedQAGenerator:
         # Save
         OUTPUT_PARQUET.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(OUTPUT_PARQUET, engine="pyarrow", index=False)
-        print(f"\n[+] Success!")
-        print(f"Samples: {len(df)}")
-        print(f"Classes: {df['expected_class'].nunique()}")
-        print(f"Output: {OUTPUT_PARQUET}")
+        logger.info(f"\n[+] Success!")
+        logger.info(f"Samples: {len(df)}")
+        logger.info(f"Classes: {df['expected_class'].nunique()}")
+        logger.info(f"Output: {OUTPUT_PARQUET}")
 
         # Distribution report (Unchanged)
-        print("\n[*] Samples per class:")
+        logger.info("\n[*] Samples per class:")
         counts = (df["expected_class"].value_counts().sort_index())
-        print(counts.to_string())
-        print("\n[*] Samples by depth:")
+        logger.info(counts.to_string())
+        logger.info("\n[*] Samples by depth:")
         depth_counts = (df["depth"].value_counts().sort_index())
-        print(depth_counts.to_string())
+        logger.info(depth_counts.to_string())
 
         # Leaf distribution
-        print("\n[*] Leaf count by depth:")
+        logger.info("\n[*] Leaf count by depth:")
         leaf_depth_counts = {}
         for class_name, metadata in (self.class_metadata.items()):
             if not metadata["is_leaf"]:
@@ -544,13 +606,15 @@ class StratifiedQAGenerator:
             leaf_depth_counts[depth] = (leaf_depth_counts.get(depth, 0) + 1)
 
         for depth in sorted(leaf_depth_counts):
-            print(f"    depth {depth}: {leaf_depth_counts[depth]} leaf classes")
+            logger.info(f"    depth {depth}: {leaf_depth_counts[depth]} leaf classes")
 
         # Stocker le nombre final d'échantillons générés
         self.final_sample_count = len(df)
 
 # Main execution (Unchanged)
 if __name__ == "__main__":
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_data = (yaml.safe_load(f) or {})
