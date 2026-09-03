@@ -5,7 +5,8 @@ from typing import Optional
 from biomedcat.stages.biolink_yml_processor import biolink_yml_processor
 
 
-BASE_DIR = Path(__file__).parent.absolute()
+# The flat Biolink class table lives in <repo root>/data, next to the ChromaDB index (see config.py).
+BASE_DIR = Path(__file__).parent.parent.absolute()
 BIOLINK_FILE_PATH = BASE_DIR / "data/biolink_classes_flat.json"
 
 if BIOLINK_FILE_PATH.is_file():
@@ -37,6 +38,8 @@ class Entity:
     text: str
     type: str
     segment: str
+    # 1-based slide/page the mention was found on; provenance for the context graph stage.
+    page: int | None = None
 
 @dataclass
 class Candidate:
@@ -45,10 +48,16 @@ class Candidate:
     biolink_type: str | None
     rank: int
     source: str
+    # Canonical RTX-KG2c id for this CURIE (from the offline equivalents table), None if unknown.
+    kg2c_id: str | None = None
 
 @dataclass
 class NormalizedEntity(Entity):
     curie: str | None = None
+    # Canonical RTX-KG2c id of the chosen CURIE; this is the seed used by the context-graph stage.
+    kg2c_id: str | None = None
+    # Human-readable label of the chosen candidate, kept for the report and the exports.
+    label: str | None = None
 
 @dataclass
 class PipelineResult:
