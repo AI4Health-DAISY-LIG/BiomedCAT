@@ -28,10 +28,11 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
         "model": model_id,
         "prompt": prompt.strip(),
         "stream": False,
+        # 0 unloads the model after the call so successive stages never stack models in RAM.
+        "keep_alive": settings.ollama_keep_alive,
         "options": {
             "temperature": temperature,
             "num_predict": max_new_tokens,
-            "do_sample":False
         }
     }
 
@@ -93,6 +94,8 @@ def chat(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, tem
         "model": model_id,
         "messages": messages,
         "stream": False,
+        # 0 unloads the model after the call so successive stages never stack models in RAM.
+        "keep_alive": settings.ollama_keep_alive,
         "options": {
             "temperature": temperature,
             "num_predict": max_new_tokens
