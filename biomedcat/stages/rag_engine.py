@@ -264,3 +264,7 @@ if __name__ == "__main__":
     rag_engine = build_rag()
     results = rag_engine.search("CACNA1C gene")
     context = rag_engine.get_context(["gene"])
+    print('--- Results:')
+    print(results)
+    print('--- Context:')
+    print(context)
