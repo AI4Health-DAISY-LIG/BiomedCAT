@@ -3,8 +3,6 @@
 Pages are rasterized and sent to the external OCR service one batch at a time, so only a single batch of images is
 ever held in memory -- large decks never load fully into RAM.
 """
-import shutil
-import subprocess
 import tempfile
 import gc
 import requests
@@ -37,27 +35,6 @@ GLM_BATCH_SIZE = 4  # Batch size for processing pages/images
 CACHE_OCR_FOLDER_PATH = Path.joinpath(Path(__file__).parent.parent.parent,'data/cache_ocr')
 Path(CACHE_OCR_FOLDER_PATH).mkdir(parents=True, exist_ok=True)
 
-def _pptx_to_pdf(file_path: str, out_dir: str) -> str:
-    """Convert a .pptx to .pdf via headless LibreOffice and return the PDF path.
-
-    Going through PDF preserves the slide layout the OCR model reads; python-pptx would
-    extract only raw text and lose figures, tables, and positioning.
-    """
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
-    if soffice is None:
-        raise RuntimeError("LibreOffice (soffice) not found; required to convert PPTX to PDF.")
-
-    subprocess.run(
-        [soffice, "--headless", "--convert-to", "pdf", "--outdir", out_dir, file_path],
-        check=True, capture_output=True, timeout=180,
-    )
-
-    pdf_path = Path(out_dir) / (Path(file_path).stem + ".pdf")
-    if not pdf_path.exists():
-        raise RuntimeError(f"LibreOffice did not produce a PDF for {file_path}")
-    return str(pdf_path)
-
-
 def _to_pdf_or_image(file_path: str, tmp_dir: str) -> tuple[str, Image.Image | str]:
     """Normalise the input to a single page source: ('image', PIL.Image) or ('pdf', path)."""
     ext = Path(file_path).suffix.lower()
@@ -73,7 +50,9 @@ def _to_pdf_or_image(file_path: str, tmp_dir: str) -> tuple[str, Image.Image | s
              raise ImportError("Missing required libraries (pdf2image) for PDF handling.")
 
     if ext == ".pptx":
-        return "pdf", _pptx_to_pdf(file_path, tmp_dir)
+        # Slide decks must be exported to PDF by the user: it preserves the layout the vision
+        # model reads and removes the LibreOffice dependency from the deployment.
+        raise ValueError("PPTX input is not supported: export the slides to PDF first.")
 
     raise ValueError(f"Unsupported file type: {ext}")
 
