@@ -248,26 +248,26 @@ class NERAgentPipeline:
     # EXTRACTOR WITH MODEL
     # ---------------------------------------------------------------------------
 
-    def _extract_candidates_model(self, sentence: str) -> List[str]:
+    def _extract_candidates_model(self, sentence: str,context: str) -> List[str]:
         """Extraire les candidats biologiques avec le modèle de classification."""
         if not self.classification_model_id:
             logger.warning("Classification model ID not available, falling back to basic extraction")
             return []
             
         try:
+            if len(context)>200:
+                context = context[:200]
             # Prompt simplifié et plus clair
-            prompt = f"""Extract biomedical terms from this sentence: "{sentence}"
+            prompt = f"""Extract biomedical terms from this sentence: "{sentence}".
             
             Return ONLY a pipe-separated list of terms. 
             Examples: "insulin|diabetes|heart failure"
             Do NOT include any explanation or extra text.
-            Focus on ANY biological entities independently of their information content.
-            For compound terms like "(2R)-2-aminopropanoic acid", keep them together.
-            Ignore common words like "the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can".
-
-            Terms (pipe separated): """
+            Focus on ANY biomedical entities independently of their information content that are pertinent to the context.
+            For compound terms like "(2R)-2-aminopropanoic acid", keep them together if they are part of the same concept (e.g. modifier, etc.).
+            Ignore common words like "the", "and", "with", "for", "of", "in", "on", "at", "by", "to", "are", "was", "were", "be", "been", "have", "has", "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must", "can"."""
             
-            messages = [{"role": "user", "content": prompt}]
+            messages = [{"role": "user", "content": f"CONTEXT:{context}"},{"role": "user", "content": prompt}]
             response = generate(self.classification_model_id, messages, 800, 0.0)
             
             # Parser la réponse pour extraire les termes bruts
@@ -276,14 +276,19 @@ class NERAgentPipeline:
                 raw_candidates = [term.strip() for term in response.split("|") if term.strip()]
             elif response:
                 raw_candidates = [response.strip()]
+
+            raw_candidates = self._filter_and_deduplicate_candidates(raw_candidates)
+            raw_candidates = [(r,sentence) for r in raw_candidates]
             
             # Use shared utility for filtering and deduplication
-            return self._filter_and_deduplicate_candidates(raw_candidates)
+            return raw_candidates
         except Exception as e:
             logger.warning(f"Model-based extraction failed: {e}")
             # Fallback to the raw spaCy tokens, then apply common filter/dedup
-            raw_fallback = self._get_raw_spaCy_tokens(sentence) 
-            return self._filter_and_deduplicate_candidates(raw_fallback)
+            raw_fallback = self._get_raw_spaCy_tokens(sentence)
+            raw_fallback = self._filter_and_deduplicate_candidates(raw_fallback)
+            raw_fallback = [(r,sentence) for r in raw_fallback]
+            return raw_fallback
 
     def _get_raw_spaCy_tokens(self, sentence: str) -> List[str]:
         """Helper to return raw SpaCy tokens (pre-filtering/pre-dedup)."""
@@ -310,7 +315,7 @@ class NERAgentPipeline:
             For terms with multiple words, you may need to break it down into two different concepts
             to capture the most information content. For example alcohol dependence will be translated
             into : alcohol (small molecule) and dependence (disease).
-            If the term is a verb, transform it into a noun. For example, 'treats' will be transformed
+            If the term is a verb, transform it into a noun. For example, 'treat's' will be transformed
             into treatment and keep it ONLY if it has high informative content.
             You have access to three specialized tools that you MUST use.
             TOOLS:
@@ -342,7 +347,7 @@ class NERAgentPipeline:
         ]
 
         for step in range(self.max_agent_steps):
-            response = generate(self.classification_model_id, messages, 5000, 0)
+            response = generate(self.classification_model_id, messages, 5000, 0.0)
             messages.append({"role": "assistant", "content": response})
             
             logger.info(f"[Agent Step {step+1}] Response: {response}")
@@ -388,27 +393,36 @@ class NERAgentPipeline:
     def extract(self, text: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
         all_entities = []
-        ########################## ADD sentence tokenizer HERE
-        # for sentence in sentences:
-        #     if not sentence.strip():
-        #         continue
-            
-        #     logger.info(f"Processing sentence: {sentence[:100]}...")
-        #     self.current_sentence = sentence  # Stocker le contexte
-            
-        # 1. Extraction Phase (M1 - Recall)
-        candidates = self._extract_candidates_model(sentences)
+        for block in text:
+            if not block.strip():
+                continue
 
-        if not candidates:
-            # continue
-            return []
-        else:
-            # 2. Agentic Classification & Verification Phase (M2)
-            for term in candidates:
-                final_type = self._run_agentic_loop(term, sentences)
+            # Segmenter le bloc de texte en phrases individuelles
+            try:
+                doc = self.nlp(block)
+                sentences = [sent.text for sent in doc.sents]
+            except Exception as e:
+                logger.warning(f"Could not segment block into sentences: {e}")
+                continue
+
+            for sentence in sentences:
+                if not sentence.strip():
+                    continue
                 
-                if final_type:
-                    all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentences))
+                self.current_sentence = sentence 
+                
+                # 1. Extraction Phase (M1 - Recall)
+                candidates = self._extract_candidates_model(sentence,block)
+
+                if not candidates:
+                    continue
+                else:
+                    # 2. Agentic Classification & Verification Phase (M2)
+                    for term,sentence in candidates:
+                        final_type = self._run_agentic_loop(term, sentence)
+                        
+                        if final_type:
+                            all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
 
         return all_entities
 
