@@ -383,7 +383,7 @@ class NERAgentPipeline:
                     else:
                         observation = f"Error: Unknown tool {tool_name}"
 
-                messages.append({"role": "user", "annotated_content": f"OBSERVATION: {observation}"})
+                messages.append({"role": "user", "content": f"OBSERVATION: {observation}"})
             else:
                 logger.warning("Agent failed to provide an ACTION or FINAL_VERDICT.")
                 break
@@ -426,30 +426,32 @@ class NERAgentPipeline:
 
         return all_entities
 
-def run_ner_agent(texts, model=settings.classification_model_id, rag=build_rag()):
-    logging.basicConfig(level=logging.INFO)
+def run_ner_agent(texts: List[str], model: str = settings.classification_model_id, rag: Optional[BiomedRAG] = None) -> List[Entity]:
+    """Run the NER agent on one text block per slide and return typed entities with slide provenance.
 
-    # 1. Setup Environment
+    `texts[i]` is the OCR output of slide i+1. The RAG engine is built here only when the caller
+    did not pass one, so importing this module never triggers an index build.
+    """
+    if rag is None:
+        rag = build_rag()
+
     agent = NERAgentPipeline(
         rag_unseen=rag,
         classification_model_id=model,
-        sanitization_model_id=settings.sanitization_model_id
+        sanitization_model_id=settings.sanitization_model_id,
     )
 
-    entities = []
-    for s,text in enumerate(texts):
-
-        print(f"\n Slide {s+1} description: '{entry[1:150]}' ")
-        
+    entities: List[Entity] = []
+    for page, text in enumerate(texts, start=1):
+        if not text or not text.strip():
+            continue
+        logger.info("NER on slide %d: %r", page, text[:150])
         try:
-            results = agent.extract(text)
-            
-            
-            entities.append(Entity(text='', type='',segment=''))
-
-
+            for entity in agent.extract([text]):
+                entity.page = page
+                entities.append(entity)
         except Exception as e:
-            print(f"  [ERROR] NER failed: {e}")
+            logger.exception("NER failed on slide %d: %s", page, e)
 
     return entities
 
