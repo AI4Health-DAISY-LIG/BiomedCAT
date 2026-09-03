@@ -15,8 +15,7 @@ from datetime import datetime, timezone
 from biomedcat.config import settings
 from biomedcat.stages.ocr import run_ocr
 from biomedcat.stages.ner_agent import run_ner_agent
-# from biomedcat.stages.norm import run_norm
-from biomedcat.stages.rag_engine import build_rag
+from biomedcat.stages.norm import run_norm
 from biomedcat.types import PipelineResult
 from biomedcat.events import event_emitter
 from biomedcat.config import Settings
@@ -28,98 +27,42 @@ DATASET_DIR = Path(settings.dataset_path)
 OUTPUT_DIR  = Path(settings.output_path)
 SUPPORTED   = settings.supported_docs #{".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
 
-def process_doc(path: str) -> PipelineResult:
+def process_file(path: str, settings: Settings = settings, model_id: str | None = None) -> PipelineResult:
     """Run the full OCR -> NER -> Normalization pipeline on a single file.
 
-    Uses the provided model_id for both NER and Normalization stages.
+    `model_id` overrides the classification model for the NER and judge stages (the API passes
+    it); the OCR model always comes from settings.
     """
-    logger.info("=== Processing %s :", path)
-
-    # Stage 1: OCR -> per-slide text.
-    logger.info("[1] Image recognition :")
-    event_emitter.on_stage_change(path, "OCR", "running")
-    t0 = time.perf_counter()
-    slides = run_ocr(path, model=settings.ocr_model_id)
-    event_emitter.on_stage_change(path, "OCR", "done")
-    logger.info("OCR done: %d slide(s) in %.1fs", len(slides), time.perf_counter() - t0)
-
-    # Stage 2: Build or update Biolink RAG
-    logger.info("[2] Building Biolink standards contruction :")
-    event_emitter.on_stage_change(path, "RAG", "running")
-    rag_engine = build_rag()
-    event_emitter.on_stage_change(path, "RAG", "done")
-    logger.info("Biolink standards contruction: completed in %.1fs", len(slides), time.perf_counter() - t0)
-
-    # Stage 3: NER -> typed entities. Pool every slide's text into one file-level extraction.
-    event_emitter.on_stage_change(path, "NER", "running")
-    texts = []
-    for slide in slides:
-        texts.append(slide.text)
-    t0 = time.perf_counter()
-    entities = run_ner_agent(texts, model=settings.classification_model_id, rag=rag_engine)
-    event_emitter.on_stage_change(path, "NER", "done")
-    logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
-
-    # # Stage 3: Normalization -> entities linked to CURIEs.
-    # event_emitter.on_stage_change(path, "Norm", "running")
-    # t0 = time.perf_counter()
-    # results = run_norm(entities, model_id=model_id)
-    # event_emitter.on_stage_change(path, "Norm", "done")
-    # linked = 0
-    # for r in results:
-    #     if r.curie:
-    #         linked += 1
-    # logger.info("Norm done: %d/%d linked in %.1fs", len(results), len(results), time.perf_counter() - t0)
-
-    # return PipelineResult(
-    #     filename=Path(path).name,
-    #     ocr=slides,
-    #     ner=entities, 
-    #     norm=results,
-    # )
-
-
-def process_file(path: str, settings) -> PipelineResult:
-    """Run the full OCR -> NER -> Normalization pipeline on a single file.
-
-    Uses the provided model_id for both NER and Normalization stages.
-    """
-
+    ner_model = model_id or settings.classification_model_id
     logger.info("=== processing %s ===", path)
 
     # Stage 1: OCR -> per-slide text.
     event_emitter.on_stage_change(path, "OCR", "running")
     t0 = time.perf_counter()
-    slides = run_ocr(path,settings.ocr_model_id)
+    slides = run_ocr(path, settings.ocr_model_id)
     event_emitter.on_stage_change(path, "OCR", "done")
     logger.info("OCR done: %d slide(s) in %.1fs", len(slides), time.perf_counter() - t0)
 
-    # Stage 2: NER -> typed entities. Pool every slide's text into one file-level extraction.
+    # Stage 2: NER -> typed entities, one text block per slide so provenance (page) is kept.
     event_emitter.on_stage_change(path, "NER", "running")
-    texts = []
-    for slide in slides:
-        texts.append(slide.text)
     t0 = time.perf_counter()
-    entities = run_ner_agent(texts, settings.classification_model_id)
+    entities = run_ner_agent([slide.text for slide in slides], ner_model)
     event_emitter.on_stage_change(path, "NER", "done")
     logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
-    # # Stage 3: Normalization -> entities linked to CURIEs.
-    # event_emitter.on_stage_change(path, "Norm", "running")
-    # t0 = time.perf_counter()
-    # results = run_norm(entities, model_id=model_id)
-    # event_emitter.on_stage_change(path, "Norm", "done")
-    # linked = 0
-    # for r in results:
-    #     if r.curie:
-    #         linked += 1
-    # logger.info("Norm done: %d/%d linked in %.1fs", len(results), len(results), time.perf_counter() - t0)
+    # Stage 3: Normalization -> entities linked to CURIEs and RTX-KG2c ids.
+    event_emitter.on_stage_change(path, "Norm", "running")
+    t0 = time.perf_counter()
+    results = run_norm(entities, model_id=ner_model)
+    event_emitter.on_stage_change(path, "Norm", "done")
+    linked = sum(1 for r in results if r.curie)
+    logger.info("Norm done: %d/%d linked in %.1fs", linked, len(results), time.perf_counter() - t0)
 
     return PipelineResult(
         filename=Path(path).name,
         ocr=slides,
-        ner=entities #, 
-        # norm=results,
+        ner=entities,
+        norm=results,
     )
 
 class _ConsoleFilter(logging.Filter):
@@ -171,15 +114,16 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id
             "file": result.filename,
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "models": {
-                "ocr":  settings.glm_model_id,
-                "ner": settings.llm_model_id,
-                "annotated_model_id": model_id, # tracking the used model
-                "norm": settings.llm_model_id,
+                "ocr":  settings.ocr_model_id,
+                "ner":  model_id,
+                "norm": model_id,
+                "embeddings": settings.RAG_embedding_model,
             },
             "resolvers": {
                 "renci":     settings.renci_url,
                 "arax":      settings.arax_url,
                 "api_limit": settings.api_limit,
+                "kg2c_dir":  str(settings.kg2c_dir),
             },
             "elapsed_s": round(elapsed, 1),
         },
@@ -223,8 +167,7 @@ if __name__ == "__main__":
     # the results and writing each to output/<stem>_BiomedCAT.json. Pass a file path to run
     # on a single file instead.
     _setup_logging()
-    settings = Settings()
-    # DEFAULT_MODEL = settings.model_name
+    DEFAULT_MODEL = settings.classification_model_id
 
     if len(sys.argv) > 1:
         paths = [Path(sys.argv[1])]
@@ -267,7 +210,7 @@ if __name__ == "__main__":
 
         try:
             t0 = time.perf_counter()
-            result = process_file(path_str, settings)
+            result = process_file(path_str, settings, model_id=DEFAULT_MODEL)
             elapsed = time.perf_counter() - t0
 
             # Print before writing: after minutes of GPU time the result exists only in enough memory,
