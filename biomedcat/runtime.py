@@ -40,7 +40,7 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
     
     for attempt in range(max_retries):
         try:
-            response = requests.post(url, json=payload, timeout=30)
+            response = requests.post(url, json=payload, timeout=300)
             response.raise_for_status()
             data = response.json()
             return data["response"].strip()
