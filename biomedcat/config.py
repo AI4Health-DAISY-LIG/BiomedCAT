@@ -14,8 +14,12 @@ class Settings:
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434") 
         self.biolink_model_data = "https://github.com/biolink/biolink-model/blob/master/biolink-model.yaml"
 
-        # INPUTS
-        self.supported_docs = {".pptx", ".pdf", ".png", ".jpg", ".jpeg"}
+        # INPUTS. PPTX is not accepted: export slides to PDF first (LibreOffice is no longer a dependency).
+        self.supported_docs = {".pdf", ".png", ".jpg", ".jpeg"}
+
+        # Ollama keep_alive sent with every request. 0 unloads the model right after the call, so
+        # the OCR, NER and judge models never coexist in RAM (16 GB budget); -1 keeps it loaded.
+        self.ollama_keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "0")
         
         # Model used for inference
         # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"
@@ -47,11 +51,22 @@ class Settings:
         self.sanitization_model_id = os.getenv("SANITIZATION_MODEL_ID", "llama-guard3:1b")
         # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
 
-        # Resolver service URLs (configure via environment if needed)
-        self.renci_url = os.getenv("RENCI_URL", "https://renci.org/api")
-        self.arax_url = os.getenv("ARAX_URL", "https://arax.ebi.ac.uk/services/api")
+        # Resolver service URLs (configure via environment if needed).
+        # RENCI Name Resolver: GET /lookup?string=...&limit=N[&biolink_type=...] -> list of candidates.
+        # ARAX entity endpoint: GET /entity?q=term -> {term: {"id": {...}, "knowledge_graph": {...}}}.
+        self.renci_url = os.getenv("RENCI_URL", "https://name-resolution-sri.renci.org/lookup")
+        self.arax_url = os.getenv("ARAX_URL", "https://arax.ncats.io/api/arax/v1.4/entity")
 
-        # API call limit
+        # API call limit and concurrency for the resolver lookups
         self.api_limit = int(os.getenv("API_LIMIT", "10"))
+        self.max_concurrent_requests = int(os.getenv("MAX_CONCURRENT_REQUESTS", "4"))
+
+        # Filtered RTX-KG2c build (scripts/build_kg2c_parquet.py): edges/nodes/equivalents Parquet.
+        # equivalents.parquet maps any known CURIE to the canonical KG2c id, used as an offline
+        # canonicalization step after name resolution and by the context-graph stage.
+        self.kg2c_dir = os.getenv("KG2C_DIR", str(Path.joinpath(ROOT_PATH, "data/kg2c")))
+        self.predicate_profile = os.getenv(
+            "PREDICATE_PROFILE", str(Path.joinpath(ROOT_PATH, "data/profiles/biochemical_actions_probs.json"))
+        )
 
 settings = Settings()
