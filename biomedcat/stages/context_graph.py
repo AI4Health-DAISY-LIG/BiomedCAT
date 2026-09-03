@@ -5,54 +5,42 @@ expands them hop by hop over the filtered KG2c Parquet files (scripts/build_kg2c
 entirely inside DuckDB, so the graph is never fully resident in memory. Every retained node
 carries its provenance: which seeds reach it, hence which slides, and at what distance.
 
-Scoring (explainable, no random walk):
+Edge weights come from the user preference profile (biomedcat.profiles): predicate weight x
+knowledge-source weight x knowledge-level weight. Edges whose predicate is absent from the
+profile are not traversed. Two profiles on the same seeds therefore give two different
+context graphs.
 
-    path_weight(s -> v)  = product of predicate weights along the path
+Pruning (this is not a ranking of hypotheses, which is the subject of MEDiQ; it only bounds
+the graph so that it can be displayed and shared):
+
+    path_weight(s -> v)  = product of edge weights along the path
                            / product over intermediate nodes u of log2(2 + degree(u))
     score(v)             = sum over seeds s of best path_weight(s -> v)
                            / log2(2 + degree(v)) ** alpha
 
-The predicate weights come from the user preference profile. Intermediate nodes are penalized
-by their degree, so a path that goes through a generic hub ("cancer", actin, a housekeeping
-protein) contributes little: the same evidence reached through a specific node counts more.
-The target node itself is penalized more mildly (alpha, default 0.5), so that a well-connected
-but relevant node is not ranked below an obscure singleton. Nodes above `hub_cap` are reached
-but never expanded.
+Intermediate nodes are penalized by their degree so that a path through a generic hub
+("cancer", actin, a housekeeping protein) contributes little. The graph is then capped per
+Biolink category, so every layer of the category layout stays populated. Nodes above
+`hub_cap` are reached but never expanded.
 
-Optional pharmacology restriction: edges that touch a chemical node are kept only when their
-primary knowledge source is a pharmacology database (ChEMBL, DGIdb, DrugCentral, DrugBank).
-This removes metabolite and cofactor edges (ATP, water, copper...) that otherwise crowd the
-compound ranking.
+Reported metrics are presence metrics: size, category composition, vocabulary expansion
+(nodes per seed), diameter and number of connected components of the kept graph, number of
+seed pairs connected inside it, and the position of nodes of interest when asked.
 """
 from __future__ import annotations
 
 import csv
 import json
 import logging
-import math
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Iterable
 
 from biomedcat.config import settings
+from biomedcat.profiles import Profile, load_profile, register_in_duckdb
 
 logger = logging.getLogger(__name__)
-
-CHEMICAL_CATEGORIES = (
-    "biolink:Drug",
-    "biolink:SmallMolecule",
-    "biolink:ChemicalEntity",
-    "biolink:MolecularMixture",
-    "biolink:ChemicalMixture",
-)
-
-PHARMACOLOGY_SOURCES = (
-    "infores:chembl",
-    "infores:dgidb",
-    "infores:drugcentral",
-    "infores:drugbank",
-)
 
 
 @dataclass
@@ -68,28 +56,32 @@ class Seed:
 
 @dataclass
 class ContextGraphParams:
+    profile: str = ""                     # profile JSON path; default: settings.predicate_profile
     hops: int = 2
     hub_cap: int = 500
-    min_edge_weight: float = 0.0
-    top_k_nodes: int = 2000
-    pharmacology_only: bool = False
+    min_edge_weight: float = 0.0          # edges below this (after profile weighting) are ignored
+    per_category_cap: int = 300           # kept nodes per Biolink category
+    alpha: float = 0.5                    # exponent of the target node's own degree penalty
     exclude_prediction_edges: bool = False
-    # Exponent of the target node's own degree penalty (0 = none, 1 = full log-degree).
-    alpha: float = 0.5
 
 
 @dataclass
 class ContextGraphResult:
     out_dir: str
+    profile: str
     n_seeds: int
     n_seeds_in_graph: int
     n_nodes: int
     n_edges: int
+    n_reached: int
     per_hop: list[dict]
-    top_compounds: list[dict]
+    categories: dict
+    vocabulary_expansion: float           # kept nodes / seeds present
+    diameter: int | None
+    n_components: int
+    seed_pairs_connected: str             # "connected/total"
     params: dict
     seconds: float
-    # Ranks of requested nodes (evaluation hook), keyed by KG2c id.
     ranks: dict = field(default_factory=dict)
 
 
@@ -115,15 +107,16 @@ def _sql_path(path: Path) -> str:
 def _ensure_degrees(con, kg_dir: Path) -> None:
     """Materialize the undirected degree of every node once, next to the Parquet files."""
     degrees = kg_dir / "degrees.parquet"
+    edges = _sql_path(kg_dir / "edges.parquet")
     if not degrees.is_file():
         logger.info("computing node degrees into %s", degrees)
         con.execute(
             f"""
             COPY (
                 SELECT node, SUM(n)::BIGINT AS degree FROM (
-                    SELECT subject AS node, COUNT(*) AS n FROM read_parquet('{_sql_path(kg_dir / "edges.parquet")}') GROUP BY subject
+                    SELECT subject AS node, COUNT(*) AS n FROM read_parquet('{edges}') GROUP BY subject
                     UNION ALL
-                    SELECT object AS node, COUNT(*) AS n FROM read_parquet('{_sql_path(kg_dir / "edges.parquet")}') GROUP BY object
+                    SELECT object AS node, COUNT(*) AS n FROM read_parquet('{edges}') GROUP BY object
                 ) GROUP BY node
             ) TO '{_sql_path(degrees)}' (FORMAT PARQUET)
             """
@@ -131,33 +124,32 @@ def _ensure_degrees(con, kg_dir: Path) -> None:
     con.execute(f"CREATE TABLE deg AS SELECT * FROM read_parquet('{_sql_path(degrees)}')")
 
 
-def _create_edge_view(con, kg_dir: Path, params: ContextGraphParams) -> None:
-    """Expose the traversable edges as `e` (directed) and `und` (both directions)."""
+def _create_edge_table(con, kg_dir: Path, profile: Profile, params: ContextGraphParams) -> None:
+    """Expose the traversable edges as `e` (directed) and `und` (both directions), profile-weighted."""
     edges = _sql_path(kg_dir / "edges.parquet")
-    nodes = _sql_path(kg_dir / "nodes.parquet")
     preds = _sql_path(kg_dir / "predicates.parquet")
-    chem = ", ".join(f"'{c}'" for c in CHEMICAL_CATEGORIES)
-    pharm = ", ".join(f"'{s}'" for s in PHARMACOLOGY_SOURCES)
+    register_in_duckdb(con, profile)
 
-    conditions = [f"e.weight >= {params.min_edge_weight}"]
+    # Inside the outer WHERE, `w` is the predicate weight and `weight` the full edge weight.
+    conditions = ["w > 0", f"weight >= {params.min_edge_weight}"]
     if params.exclude_prediction_edges:
-        conditions.append("e.knowledge_level <> 'prediction'")
-    if params.pharmacology_only:
-        conditions.append(
-            f"(NOT (a.category IN ({chem}) OR b.category IN ({chem})) OR e.primary_knowledge_source IN ({pharm}))"
-        )
+        conditions.append("knowledge_level <> 'prediction'")
     where = " AND ".join(conditions)
 
     con.execute(
         f"""
         CREATE TABLE e AS
-        SELECT e.subject, e.object, p.predicate, e.weight, e.primary_knowledge_source AS source,
-               e.knowledge_level
-        FROM read_parquet('{edges}') e
-        JOIN read_parquet('{preds}') p USING (predicate_code)
-        JOIN read_parquet('{nodes}') a ON a.id = e.subject
-        JOIN read_parquet('{nodes}') b ON b.id = e.object
-        WHERE {where}
+        SELECT * FROM (
+            SELECT e.subject, e.object, p.predicate,
+                   pp.w * COALESCE(ps.w, 1.0) * COALESCE(pk.w, 1.0) AS weight,
+                   e.primary_knowledge_source AS source, e.knowledge_level,
+                   pp.w
+            FROM read_parquet('{edges}') e
+            JOIN read_parquet('{preds}') p USING (predicate_code)
+            LEFT JOIN prof_pred pp ON pp.predicate = p.predicate
+            LEFT JOIN prof_src ps ON ps.source = e.primary_knowledge_source
+            LEFT JOIN prof_kl pk ON pk.level = e.knowledge_level
+        ) WHERE {where}
         """
     )
     con.execute("CREATE VIEW und AS SELECT subject AS a, object AS b, weight FROM e UNION ALL SELECT object AS a, subject AS b, weight FROM e")
@@ -170,13 +162,14 @@ def run_context_graph(
     kg_dir: str | Path | None = None,
     find_ids: Iterable[str] | None = None,
 ) -> ContextGraphResult:
-    """Expand the seeds, score the reached nodes, and write the context graph to `out_dir`.
+    """Expand the seeds, prune, write the context graph to `out_dir`, return presence metrics.
 
-    `find_ids` are KG2c ids whose ranks are reported in the result (evaluation of known entities).
+    `find_ids` are KG2c ids whose position is reported in the result (presence of known entities).
     """
     import duckdb
 
     params = params or ContextGraphParams()
+    profile = load_profile(params.profile or settings.predicate_profile)
     kg_dir = Path(kg_dir or settings.kg2c_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -184,14 +177,13 @@ def run_context_graph(
 
     con = duckdb.connect()
     _ensure_degrees(con, kg_dir)
-    _create_edge_view(con, kg_dir, params)
-    nodes_path = _sql_path(kg_dir / "nodes.parquet")
-    con.execute(f"CREATE TABLE nodes AS SELECT id, name, category FROM read_parquet('{nodes_path}')")
+    _create_edge_table(con, kg_dir, profile, params)
+    con.execute(f"CREATE TABLE nodes AS SELECT id, name, category FROM read_parquet('{_sql_path(kg_dir / 'nodes.parquet')}')")
 
     # Seeds: only those present in the filtered graph can be expanded.
     con.execute("CREATE TABLE seeds (seed VARCHAR, seed_weight DOUBLE)")
     con.executemany("INSERT INTO seeds VALUES (?, ?)", [(s.kg2c_id, s.weight) for s in seeds])
-    present = {r[0] for r in con.execute("SELECT seed FROM seeds WHERE seed IN (SELECT id FROM nodes)").fetchall()}
+    present = [s.kg2c_id for s in seeds if con.execute("SELECT COUNT(*) FROM nodes WHERE id = ?", [s.kg2c_id]).fetchone()[0]]
     missing = [s.kg2c_id for s in seeds if s.kg2c_id not in present]
     if missing:
         logger.warning("%d seed(s) absent from the filtered KG2c: %s", len(missing), missing[:10])
@@ -208,13 +200,12 @@ def run_context_graph(
             CREATE OR REPLACE TABLE frontier AS
             SELECT r.seed, r.node,
                    CASE WHEN r.hop = 0 THEN r.path_w ELSE r.path_w / LOG2(2 + d.degree) END AS path_w
-            FROM reach r
-            JOIN deg d ON d.node = r.node
+            FROM reach r JOIN deg d ON d.node = r.node
             WHERE r.hop = {hop - 1} AND (r.hop = 0 OR d.degree <= {params.hub_cap})
             """
         )
         con.execute(
-            f"""
+            """
             CREATE OR REPLACE TABLE step AS
             SELECT f.seed, u.b AS node, MAX(f.path_w * u.weight) AS path_w
             FROM frontier f JOIN und u ON u.a = f.node
@@ -232,7 +223,7 @@ def run_context_graph(
         per_hop.append({"hop": hop, "nodes_reached": int(n_new)})
         logger.info("hop %d: %d node(s) reached", hop, n_new)
 
-    # Node scores: coverage-weighted path weight, penalized by the node's own degree.
+    # Pruning score, then a cap per Biolink category.
     con.execute(
         f"""
         CREATE TABLE scored AS
@@ -249,38 +240,39 @@ def run_context_graph(
         GROUP BY r.node, n.name, n.category, d.degree
         """
     )
+    n_reached = con.execute("SELECT COUNT(*) FROM scored").fetchone()[0]
     con.execute(
         f"""
         CREATE TABLE kept AS
-        SELECT * FROM scored ORDER BY score DESC, coverage DESC, hop ASC LIMIT {params.top_k_nodes}
+        SELECT * EXCLUDE (rk) FROM (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY category ORDER BY score DESC, coverage DESC, hop ASC) AS rk
+            FROM scored
+        ) WHERE rk <= {params.per_category_cap}
         """
     )
     con.execute("CREATE TABLE kept_ids AS SELECT node AS id FROM kept UNION SELECT seed FROM seeds WHERE seed IN (SELECT id FROM nodes)")
 
-    # Provenance: seed id -> slides and mentions, joined into the node table.
-    seed_pages = {s.kg2c_id: s for s in seeds}
+    # ---- exports ---------------------------------------------------------------------
+    seed_by_id = {s.kg2c_id: s for s in seeds}
 
     def pages_for(seed_list: str) -> str:
         pages: set[int] = set()
         for sid in seed_list.split(";"):
-            pages.update(seed_pages.get(sid, Seed(sid)).pages)
+            pages.update(seed_by_id[sid].pages if sid in seed_by_id else [])
         return ";".join(str(p) for p in sorted(pages))
 
-    # ---- exports ---------------------------------------------------------------------
     node_rows = con.execute(
-        """
-        SELECT k.node, k.name, k.category, k.hop, k.coverage, k.score, k.degree, k.seeds FROM kept k
-        ORDER BY k.score DESC
-        """
+        "SELECT node, name, category, hop, coverage, score, degree, seeds FROM kept ORDER BY category, score DESC"
     ).fetchall()
     with open(out_dir / "nodes.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["id", "name", "category", "hop", "coverage", "score", "degree", "seeds", "slides", "is_seed"])
-        for s in seeds:
-            if s.kg2c_id in present:
-                w.writerow([s.kg2c_id, s.label, "", 0, 0, "", "", s.kg2c_id, ";".join(map(str, s.pages)), 1])
+        w.writerow(["id", "name", "category", "hop", "coverage", "shared", "score", "degree", "seeds", "slides", "is_seed"])
+        for sid in present:
+            s = seed_by_id[sid]
+            w.writerow([sid, s.label, "seed", 0, 0, "", "", "", sid, ";".join(map(str, s.pages)), 1])
         for row in node_rows:
-            w.writerow([*row[:8], pages_for(row[7]), 0])
+            shared = "shared" if row[4] > 1 else "specific"
+            w.writerow([row[0], row[1], row[2], row[3], row[4], shared, round(row[5], 6), row[6], row[7], pages_for(row[7]), 0])
 
     edge_rows = con.execute(
         """
@@ -291,91 +283,108 @@ def run_context_graph(
     with open(out_dir / "edges.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["subject", "predicate", "object", "weight", "primary_knowledge_source", "knowledge_level"])
-        w.writerows(edge_rows)
+        for r in edge_rows:
+            w.writerow([r[0], r[1], r[2], round(r[3], 6), r[4], r[5]])
 
-    chem = ", ".join(f"'{c}'" for c in CHEMICAL_CATEGORIES)
-    compound_rows = con.execute(
-        f"""
-        SELECT node, name, hop, coverage, score, degree, seeds FROM scored
-        WHERE category IN ({chem}) ORDER BY score DESC LIMIT 50
-        """
-    ).fetchall()
-    top_compounds = [
-        {"id": r[0], "name": r[1], "hop": r[2], "coverage": r[3], "score": round(r[4], 6), "degree": r[5], "seeds": r[6]}
-        for r in compound_rows
-    ]
-    with open(out_dir / "compounds.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["id", "name", "hop", "coverage", "score", "degree", "seeds"])
-        w.writeheader()
-        w.writerows(top_compounds)
+    categories = {
+        cat: int(n) for cat, n in con.execute("SELECT category, COUNT(*) FROM kept GROUP BY category ORDER BY 2 DESC").fetchall()
+    }
 
-    _write_graphml(out_dir / "context_graph.graphml", node_rows, edge_rows, seeds, present)
-
-    # Ranks of nodes of interest (evaluation hook): overall rank and rank within their category.
-    ranks = {}
+    # Position of nodes of interest (presence check), overall and within their category.
+    ranks: dict = {}
     if find_ids:
+        find_ids = list(find_ids)
         placeholders = ", ".join("?" for _ in find_ids)
         for row in con.execute(
             f"""
             WITH ranked AS (
-                SELECT node, name, category, hop, coverage, score, degree,
-                       RANK() OVER (ORDER BY score DESC) AS rank_all,
+                SELECT node, name, category, hop, coverage, degree,
                        RANK() OVER (PARTITION BY category ORDER BY score DESC) AS rank_in_category,
-                       COUNT(*) OVER () AS n_all,
-                       COUNT(*) OVER (PARTITION BY category) AS n_in_category
+                       COUNT(*) OVER (PARTITION BY category) AS n_in_category,
+                       node IN (SELECT id FROM kept_ids) AS kept
                 FROM scored
             )
             SELECT * FROM ranked WHERE node IN ({placeholders})
             """,
-            list(find_ids),
+            find_ids,
         ).fetchall():
             ranks[row[0]] = {
-                "name": row[1], "category": row[2], "hop": row[3], "coverage": row[4],
-                "score": round(row[5], 6), "degree": row[6],
-                "rank_all": f"{row[7]}/{row[9]}", "rank_in_category": f"{row[8]}/{row[10]}",
+                "name": row[1], "category": row[2], "hop": row[3], "coverage": row[4], "degree": row[5],
+                "rank_in_category": f"{row[6]}/{row[7]}", "kept": bool(row[8]), "reached": True,
             }
         for node_id in find_ids:
-            ranks.setdefault(node_id, {"name": None, "reached": False})
+            ranks.setdefault(node_id, {"reached": False, "kept": False})
+    con.close()
+
+    graph_metrics = _graph_metrics(out_dir / "context_graph.graphml", node_rows, edge_rows, seeds, present)
 
     result = ContextGraphResult(
         out_dir=str(out_dir),
+        profile=profile.name,
         n_seeds=len(seeds),
         n_seeds_in_graph=len(present),
         n_nodes=len(node_rows) + len(present),
         n_edges=len(edge_rows),
+        n_reached=int(n_reached),
         per_hop=per_hop,
-        top_compounds=top_compounds[:20],
+        categories=categories,
+        vocabulary_expansion=round((len(node_rows) + len(present)) / max(len(present), 1), 2),
+        diameter=graph_metrics["diameter"],
+        n_components=graph_metrics["n_components"],
+        seed_pairs_connected=graph_metrics["seed_pairs_connected"],
         params=asdict(params),
         seconds=round(time.perf_counter() - t0, 1),
         ranks=ranks,
     )
     (out_dir / "summary.json").write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
-    con.close()
-    logger.info("context graph: %d nodes, %d edges, %.1f s -> %s", result.n_nodes, result.n_edges, result.seconds, out_dir)
+    logger.info("context graph [%s]: %d nodes, %d edges, diameter %s, %d component(s), %.1f s -> %s",
+                profile.name, result.n_nodes, result.n_edges, result.diameter, result.n_components, result.seconds, out_dir)
     return result
 
 
-def _write_graphml(path: Path, node_rows, edge_rows, seeds: list[Seed], present: set[str]) -> None:
-    """Write the context graph for Cytoscape or Gephi; skipped when python-igraph is missing."""
+def _graph_metrics(graphml_path: Path, node_rows, edge_rows, seeds: list[Seed], present: list[str]) -> dict:
+    """Build the kept graph in igraph, write GraphML for Cytoscape/Gephi, and compute structure metrics."""
+    empty = {"diameter": None, "n_components": 0, "seed_pairs_connected": "0/0"}
     try:
         import igraph as ig
     except ImportError:
-        logger.warning("python-igraph not installed: GraphML export skipped")
-        return
-    ids = [s.kg2c_id for s in seeds if s.kg2c_id in present] + [r[0] for r in node_rows]
+        logger.warning("python-igraph not installed: GraphML export and graph metrics skipped")
+        return empty
+
+    seed_by_id = {s.kg2c_id: s for s in seeds}
+    ids = list(present) + [r[0] for r in node_rows]
     index = {node_id: i for i, node_id in enumerate(ids)}
     g = ig.Graph(n=len(ids), directed=True)
     g.vs["id"] = ids
-    g.vs["name"] = [s.label for s in seeds if s.kg2c_id in present] + [r[1] for r in node_rows]
+    g.vs["name"] = [seed_by_id[s].label for s in present] + [r[1] for r in node_rows]
     g.vs["category"] = ["seed"] * len(present) + [r[2] for r in node_rows]
     g.vs["hop"] = [0] * len(present) + [int(r[3]) for r in node_rows]
-    g.vs["score"] = [0.0] * len(present) + [float(r[5]) for r in node_rows]
+    g.vs["coverage"] = [0] * len(present) + [int(r[4]) for r in node_rows]
+    g.vs["shared"] = ["seed"] * len(present) + [("shared" if r[4] > 1 else "specific") for r in node_rows]
     g.vs["is_seed"] = [True] * len(present) + [False] * len(node_rows)
-    edges = [(index[s], index[o]) for s, _, o, *_ in edge_rows if s in index and o in index]
-    g.add_edges(edges)
-    g.es["predicate"] = [p for s, p, o, *_ in edge_rows if s in index and o in index]
-    g.es["weight"] = [float(w) for s, p, o, w, *_ in edge_rows if s in index and o in index]
-    g.write_graphml(str(path))
+    g.vs["slides"] = [";".join(map(str, seed_by_id[s].pages)) for s in present] + [""] * len(node_rows)
+    kept_edges = [(s, p, o, w) for s, p, o, w, *_ in edge_rows if s in index and o in index]
+    g.add_edges([(index[s], index[o]) for s, _, o, _ in kept_edges])
+    g.es["predicate"] = [p for _, p, _, _ in kept_edges]
+    g.es["weight"] = [float(w) for _, _, _, w in kept_edges]
+    g.write_graphml(str(graphml_path))
+
+    if g.vcount() == 0:
+        return empty
+    und = g.as_undirected(mode="collapse")
+    components = und.connected_components()
+    membership = components.membership
+    seed_idx = [index[s] for s in present]
+    total_pairs = len(seed_idx) * (len(seed_idx) - 1) // 2
+    connected_pairs = sum(
+        1 for i in range(len(seed_idx)) for j in range(i + 1, len(seed_idx)) if membership[seed_idx[i]] == membership[seed_idx[j]]
+    )
+    giant = und.induced_subgraph(max(components, key=len))
+    return {
+        "diameter": int(giant.diameter(directed=False)),
+        "n_components": len(components),
+        "seed_pairs_connected": f"{connected_pairs}/{total_pairs}",
+    }
 
 
 # ------------------------------------------------------------------------------------------
@@ -404,14 +413,14 @@ if __name__ == "__main__":
     parser.add_argument("--seeds", help="Comma-separated KG2c ids (e.g. NCBIGene:100288687,MONDO:0008030).")
     parser.add_argument("--result-json", help="BiomedCAT output JSON; seeds are its entities' kg2c_id values.")
     parser.add_argument("--out", required=True, help="Output directory.")
+    parser.add_argument("--profile", default="", help="Profile JSON (default: settings.predicate_profile).")
     parser.add_argument("--hops", type=int, default=2)
     parser.add_argument("--hub-cap", type=int, default=500)
     parser.add_argument("--min-edge-weight", type=float, default=0.0)
-    parser.add_argument("--top-k", type=int, default=2000)
-    parser.add_argument("--pharmacology-only", action="store_true", help="Keep chemical edges from pharmacology sources only.")
+    parser.add_argument("--per-category-cap", type=int, default=300)
+    parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--no-predictions", action="store_true", help="Drop edges with knowledge_level = prediction.")
-    parser.add_argument("--alpha", type=float, default=0.5, help="Exponent of the target node degree penalty.")
-    parser.add_argument("--find", default=None, help="Comma-separated KG2c ids whose ranks are reported.")
+    parser.add_argument("--find", default=None, help="Comma-separated KG2c ids whose presence is reported.")
     parser.add_argument("--kg-dir", default=None)
     args = parser.parse_args()
 
@@ -427,18 +436,15 @@ if __name__ == "__main__":
         seed_list,
         args.out,
         ContextGraphParams(
+            profile=args.profile,
             hops=args.hops,
             hub_cap=args.hub_cap,
             min_edge_weight=args.min_edge_weight,
-            top_k_nodes=args.top_k,
-            pharmacology_only=args.pharmacology_only,
-            exclude_prediction_edges=args.no_predictions,
+            per_category_cap=args.per_category_cap,
             alpha=args.alpha,
+            exclude_prediction_edges=args.no_predictions,
         ),
         kg_dir=args.kg_dir,
         find_ids=[s.strip() for s in args.find.split(",")] if args.find else None,
     )
-    print(json.dumps({k: v for k, v in asdict(res).items() if k != "top_compounds"}, indent=2))
-    print("\nTop compounds:")
-    for c in res.top_compounds:
-        print(f"  {c['score']:.4f}  hop {c['hop']}  cov {c['coverage']}  deg {c['degree']:>5}  {c['name'][:70]}")
+    print(json.dumps(asdict(res), indent=2))
