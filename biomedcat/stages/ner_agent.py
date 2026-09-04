@@ -176,12 +176,15 @@ class NERAgentPipeline:
         with or without the biolink: prefix, spaced or CamelCase ('Gene', 'biolink:Gene',
         'gross anatomical structure', 'GrossAnatomicalStructure' all map to the same class).
         """
-        verdict_match = re.search(r"FINAL_VERDICT:\s*([^\n]+)", response)
+        # Tolerate the variants small models produce: **FINAL_VERDICT:**, FINAL VERDICT -, Final_Verdict.
+        verdict_match = re.search(r"FINAL[_ ]VERDICT\**\s*[:\-]?\s*\**\s*([^\n]+)", response, re.IGNORECASE)
         if not verdict_match:
             return False, None, "No FINAL_VERDICT found in agent response."
         raw = verdict_match.group(1).strip().strip("'\"`*.:;,()[] \t").strip()
         if re.search(r"<script>|\$\{|\{\{|\$\(", raw, re.IGNORECASE):
             return False, None, f"Suspicious verdict line: {raw[:60]}"
+        if raw.lower() in ("none", "null", "n/a", "not applicable"):
+            return True, "NONE", ""
         canonical = self._type_by_norm.get(self._norm_type(raw))
         if canonical is None:
             return False, None, f"Verdict '{raw[:60]}' is not a Biolink class."
@@ -334,12 +337,19 @@ class NERAgentPipeline:
             2. get_class_hierarchy(class_name): parents, children and siblings of a class, to choose
             between a class and its neighbours (e.g. 'protein' versus 'protein isoform').
             3. lookup_exact_term(class_name): definition of one class whose exact name you already know.
+            PRIVACY: never classify information about identifiable people: person names, patient or
+            sample identifiers, dates of birth, ages, addresses, hospitals, contact details. For such a
+            term answer immediately with FINAL_VERDICT: none.
+            UNKNOWN TERMS: if you do not recognise the term as a real biomedical entity, gene, disease,
+            molecule, process, structure, from your own knowledge, do not guess a class from its
+            spelling; answer FINAL_VERDICT: none.
             PROCESS:
             You have at most 3 steps. Step 1 is always semantic_context_search with a description.
             Choose the most specific class the term is an instance of, but never a more specific
             class than the evidence supports (a plain protein is 'protein', not 'protein isoform').
-            As soon as a tool result names a class that fits, answer.
-            For each step, output a short 'THOUGHT' and then ONE 'ACTION' in the format:
+            As soon as a tool result names a class that fits, STOP calling tools and answer with the
+            FINAL_VERDICT line: do not verify a class you already recognised.
+            Otherwise output a short 'THOUGHT' and then ONE 'ACTION' in the format:
             ACTION: tool_name(argument)
             When you know the type, end your response with exactly this line, using the class name
             exactly as returned by the tools (lowercase, with spaces):
@@ -374,7 +384,7 @@ class NERAgentPipeline:
             if is_valid:
                 verdict = final_verdict
                 break
-            if "FINAL_VERDICT" in response.upper():
+            if re.search(r"FINAL[_ ]VERDICT", response, re.IGNORECASE):
                 # An unrecognized class name: tell the agent once, let it correct itself.
                 logger.warning("[Agent] verdict rejected for %r: %s", term_clean, error_msg)
                 messages.append({"role": "user", "content": f"OBSERVATION: {error_msg} Answer with FINAL_VERDICT: <exact Biolink class name>."})
@@ -402,6 +412,18 @@ class NERAgentPipeline:
             else:
                 logger.warning("Agent failed to provide an ACTION or FINAL_VERDICT.")
                 break
+
+        if verdict is None and len(messages) > 2:
+            # The model often knows the class after one or two observations but keeps calling
+            # tools; one forced closing turn, no tools allowed, recovers those verdicts cheaply.
+            messages.append({"role": "user", "content": "No more tool calls. Reply with exactly one line: FINAL_VERDICT: <class name>, or FINAL_VERDICT: none if the term is not a biomedical entity."})
+            response = generate(self.classification_model_id, messages, 120, 0.0)
+            logger.info(f"[Agent Final] Response: {response}")
+            is_valid, final_verdict, error_msg = self._validate_output(response)
+            if is_valid:
+                verdict = final_verdict
+            else:
+                logger.warning("[Agent] no verdict for %r after the closing turn: %s", term_clean, error_msg)
 
         self._verdict_cache[cache_key] = verdict
         return verdict
@@ -436,8 +458,8 @@ class NERAgentPipeline:
                     # 2. Agentic Classification & Verification Phase (M2)
                     for term,sentence in candidates:
                         final_type = self._run_agentic_loop(term, sentence)
-                        
-                        if final_type:
+                        # "NONE" is the agent's explicit abstention (not biomedical, or personal data).
+                        if final_type and final_type != "NONE":
                             all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
 
         return all_entities
