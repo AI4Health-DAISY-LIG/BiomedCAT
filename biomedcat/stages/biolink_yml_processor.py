@@ -273,7 +273,9 @@ def biolink_yml_processor(
                 for num_examples, ex in enumerate(raw_examples): # if list of dicts
                     if num_examples <= max_examples: # limit number of examples
                         if isinstance(ex,str):
-                            extracted_texts.append(raw_examples) # HARD TRUNCATION                                                                                                                                                        
+                            # One example string; appending the whole list here produced a nested list
+                            # that later joined character by character in the index.
+                            extracted_texts.append(ex)                                                                                                                                                        
                         elif isinstance(ex, dict):
                                 text_parts = []
                                 for v in ex.values():
@@ -317,7 +319,12 @@ def biolink_yml_processor(
             "mixins": ", ".join(mixins) if mixins else "",
             "class_uri": class_uri,
             #"biolink_definition": class_def, # Keep original for reference - cannot add because dict
-            "parent": parent
+            "parent": parent,
+            # Deprecated and abstract classes stay in the tree (they hold children) but must not be
+            # legal verdicts nor retrieval documents: six deprecated taxa have no definition at all
+            # and acted as embedding hubs in the index.
+            "deprecated": bool(class_def.get("deprecated")),
+            "abstract": bool(class_def.get("abstract")),
         }
 
         # The 'flat' entry separates the searchable text from the structured metadata
@@ -396,31 +403,30 @@ def biolink_yml_processor(
 
     # --- Clean flat for Chroma indexing:
     flat_for_chroma = {}
-    keys_to_keep = {"definition","aliases","examples","mixins","class_uri","parent","siblings"}
-    
-    for class_name, entry in flat.items():  
-        new_entry = {                                                                                                                          
-            "doc_text": entry["doc_text"],                                                                                                     
-            "metadata": {}                                                                                                                     
-        }   
+    # Hierarchy fields are kept as lists: the agent's neighbourhood tool needs them as such. The
+    # RAG engine serializes them to strings when it hands metadata to Chroma.
+    keys_to_keep = {"definition", "aliases", "examples", "mixins", "class_uri", "parent", "siblings",
+                    "children", "ancestors", "descendants", "neighbors", "mixin_children", "deprecated", "abstract"}
+    list_keys = {"siblings", "children", "ancestors", "descendants", "neighbors", "mixin_children"}
 
-        for k in keys_to_keep:                                                                                                                 
-            if k in entry["metadata"]:                                                                                                         
-                val = entry["metadata"][k]                                                                                                     
-                                                                                                                                               
-                if isinstance(val, list):                                                                                                      
-                    # Conversion de la liste en chaîne (ex: ['a', 'b'] -> "a, b")                                                              
-                    new_entry["metadata"][k] = ", ".join(map(str, val)) if val else ""                                                         
-                # elif isinstance(val, dict):                                                           
-                #     new_entry["metadata"][k] = json.dumps(val)                                                                                 
-                elif isinstance(val, (str, int, float, bool)):                                                                                                                          
-                    # Valeur simple (str, int, etc.)                                                                                           
-                    new_entry["metadata"][k] = val
-                elif v is None:
-                    new_entry["metadata"][k] = ""
-                else:
-                    new_entry["metadata"][k] = str(v)                                                                                          
-                                                                                                                                               
+    for class_name, entry in flat.items():
+        new_entry = {"doc_text": entry["doc_text"], "metadata": {}}
+        for k in keys_to_keep:
+            if k not in entry["metadata"]:
+                if k in list_keys:
+                    new_entry["metadata"][k] = []
+                continue
+            val = entry["metadata"][k]
+            if k in list_keys:
+                new_entry["metadata"][k] = [str(x) for x in (val or [])]
+            elif isinstance(val, list):
+                new_entry["metadata"][k] = ", ".join(map(str, val)) if val else ""
+            elif isinstance(val, (str, int, float, bool)):
+                new_entry["metadata"][k] = val
+            elif val is None:
+                new_entry["metadata"][k] = ""
+            else:
+                new_entry["metadata"][k] = str(val)
         flat_for_chroma[class_name] = new_entry
 
     # --- Final Output -----------------------------------------------------
