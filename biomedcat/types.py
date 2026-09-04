@@ -65,3 +65,5 @@ class PipelineResult:
     ocr: list[Slide]
     ner: list[Entity]
     norm: list[NormalizedEntity]
+    # Summary of the context-graph stage (ContextGraphResult as a dict), None when skipped.
+    context_graph: Optional[dict] = None
