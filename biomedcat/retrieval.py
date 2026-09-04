@@ -1,4 +1,5 @@
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import requests
@@ -16,6 +17,14 @@ TYPE_TO_BIOLINK = {
 }
 
 _SESSION = requests.Session()
+
+
+def biolink_type_curie(type_name: str) -> str | None:
+    """'gross anatomical structure' -> 'biolink:GrossAnatomicalStructure'; None for empty input."""
+    words = re.sub(r"[_\-]", " ", (type_name or "").replace("biolink:", "")).split()
+    if not words:
+        return None
+    return "biolink:" + "".join(w[:1].upper() + w[1:] for w in words)
 
 def _fetch_json(url, params):
     """GET a URL and return parsed JSON, or None on any error.
@@ -148,7 +157,37 @@ def canonicalize(curies: list[str]) -> dict[str, str | None]:
             found = dict(rows)
             for c in missing:
                 _EQUIV_CACHE[c] = found.get(c)
+        # Fallback for CURIEs absent from the local table: the Translator Node Normalizer gives
+        # the clique's preferred id, then the local table says whether that id is in KG2c.
+        still_missing = [c for c in missing if _EQUIV_CACHE.get(c) is None]
+        if still_missing and not settings.resolvers_offline:
+            preferred = _nodenorm_preferred(still_missing)
+            pref_ids = sorted({p for p in preferred.values() if p})
+            in_kg = {}
+            if pref_ids and table.is_file():
+                import duckdb
+
+                con = duckdb.connect()
+                in_kg = dict(con.execute(
+                    f"SELECT curie, canonical_id FROM read_parquet('{path}') WHERE curie IN (SELECT UNNEST(?))", [pref_ids]
+                ).fetchall())
+                con.close()
+            for c in still_missing:
+                p = preferred.get(c)
+                _EQUIV_CACHE[c] = in_kg.get(p) if p else None
     return {c: _EQUIV_CACHE[c] for c in curies}
+
+
+def _nodenorm_preferred(curies: list[str]) -> dict[str, str | None]:
+    """Preferred clique id per CURIE from the Translator Node Normalizer (conflation OFF)."""
+    out: dict[str, str | None] = {}
+    for i in range(0, len(curies), 50):
+        batch = curies[i:i + 50]
+        data = _fetch_json(settings.nodenorm_url, {"curie": batch, "conflate": "false", "drug_chemical_conflate": "false"}) or {}
+        for c in batch:
+            entry = data.get(c)
+            out[c] = entry["id"]["identifier"] if entry else None
+    return out
 
 
 def build_pool(term: str, types: set[str]) -> list[Candidate]:
@@ -159,10 +198,16 @@ def build_pool(term: str, types: set[str]) -> list[Candidate]:
     """
     candidate_lists = [renci_lookup(term), arax_lookup(term)]
 
+    # One type-constrained NameRes pass per NER type. Types are Biolink class names as the
+    # agent returns them ("gross anatomical structure"); the legacy upper-case labels are
+    # still accepted.
     biolink_types = set()
     for t in types:
-        if t in TYPE_TO_BIOLINK:
-            biolink_types.add(TYPE_TO_BIOLINK[t])
+        if not t or t.upper() == "NONE":
+            continue
+        bt = TYPE_TO_BIOLINK.get(t) or biolink_type_curie(t)
+        if bt:
+            biolink_types.add(bt)
     for bt in sorted(biolink_types):
         candidate_lists.append(renci_lookup(term, biolink_type=bt))
 
@@ -176,19 +221,60 @@ def build_pool(term: str, types: set[str]) -> list[Candidate]:
     return pool
 
 
+# Biolink classes that denote people or groups of people: never sent to an external service.
+PERSONAL_TYPES = {"case", "individual organism", "cohort", "study population", "population of individual organisms", "agent"}
+# Surface forms that look like identifiers or contact data rather than biomedical concepts.
+IDENTIFIER_PATTERNS = [
+    r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",       # dates
+    r"\b[\w.+-]+@[\w-]+\.[\w.]+\b",               # e-mails
+    r"\b(?:\+?\d[\d\s().-]{7,}\d)\b",             # phone numbers
+    r"\b(?:MRN|NHS|SSN|patient|pt|id)\s*[:#]?\s*\d{3,}\b",  # record numbers
+]
+
+
+def _local_lookup(term: str, types: set[str]) -> list[Candidate]:
+    """Offline resolution: exact, case-insensitive name match in the filtered KG2c node table."""
+    table = Path(settings.kg2c_dir) / "nodes.parquet"
+    if not table.is_file():
+        return []
+    import duckdb
+
+    con = duckdb.connect()
+    rows = con.execute(
+        f"SELECT id, name, category FROM read_parquet('{str(table).replace(chr(92), '/')}') WHERE lower(name) = lower(?) LIMIT ?",
+        [term, settings.api_limit],
+    ).fetchall()
+    con.close()
+    return [Candidate(curie=i, label=n, biolink_type=c, rank=k, source="KG2c-local", kg2c_id=i) for k, (i, n, c) in enumerate(rows)]
+
+
+def is_shareable(term: str, types: set[str]) -> bool:
+    """False when a term must not leave the machine: personal-entity types or identifier-like text."""
+    if any(t.lower() in PERSONAL_TYPES for t in types):
+        return False
+    return not any(re.search(p, term, re.IGNORECASE) for p in IDENTIFIER_PATTERNS)
+
+
 def resolve_terms(term_types: dict[str, set[str]]) -> dict[str, list[Candidate]]:
     """Resolve every unique term concurrently; return term -> ranked candidate pool.
 
     term_types maps each term to the set of NER types it appeared with; the types drive the
-    type-constrained pass. One thread per term (capped by max_concurrent_requests) overlaps
-    the network waits.
+    type-constrained pass. Terms typed as people or looking like identifiers are resolved
+    locally only. With settings.resolvers_offline every term is resolved locally: no text
+    leaves the machine (exact-name matching against the KG2c node table).
     """
-    logger.info("Resolving %d unique term(s) against RENCI + ARAX...", len(term_types))
+    offline = settings.resolvers_offline
+    logger.info("Resolving %d unique term(s) %s...", len(term_types), "offline (KG2c node names)" if offline else "against RENCI + ARAX")
 
     pools = {}
     with ThreadPoolExecutor(max_workers=settings.max_concurrent_requests) as pool:
         futures = {}
         for term, types in term_types.items():
+            if offline or not is_shareable(term, types):
+                if not offline:
+                    logger.warning("Term %r kept local (personal type or identifier-like): no external lookup", term)
+                pools[term] = _local_lookup(term, types)
+                continue
             futures[pool.submit(build_pool, term, types)] = term
         for future in futures:
             term = futures[future]
