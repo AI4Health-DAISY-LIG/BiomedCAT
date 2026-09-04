@@ -54,7 +54,7 @@ def main() -> int:
     parser.add_argument("--result-json", help="BiomedCAT output JSON; seeds are its entities' kg2c_id values.")
     parser.add_argument("--seeds", help="Comma-separated KG2c ids instead of --result-json.")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--url", default="https://arax.ncats.io/api/arax/v1.4/query")
+    parser.add_argument("--url", default="https://kg2cploverdb.transltr.io/query", help="TRAPI query endpoint; default: the RTX-KG2c knowledge provider (Plover). ARAX: https://arax.ncats.io/api/arax/v1.4/query")
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--find", default="", help="Comma-separated ids whose presence is reported.")
     args = parser.parse_args()
