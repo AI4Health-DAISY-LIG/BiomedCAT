@@ -69,7 +69,7 @@ class Settings:
         # RENCI Name Resolver: GET /lookup?string=...&limit=N[&biolink_type=...] -> list of candidates.
         # ARAX entity endpoint: GET /entity?q=term -> {term: {"id": {...}, "knowledge_graph": {...}}}.
         self.renci_url = os.getenv("RENCI_URL", "https://name-resolution-sri.renci.org/lookup")
-        self.arax_url = os.getenv("ARAX_URL", "https://arax.ncats.io/api/arax/v1.4/entity")
+        self.arax_url = os.getenv("ARAX_URL", "https://arax.ncats.io/beta/api/arax/v1.4/entity")
         # Translator Node Normalizer: clique-preferred id for CURIEs absent from the local table.
         self.nodenorm_url = os.getenv("NODENORM_URL", "https://nodenorm.transltr.io/1.5/get_normalized_nodes")
 
