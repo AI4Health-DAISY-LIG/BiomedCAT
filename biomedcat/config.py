@@ -20,6 +20,9 @@ class Settings:
         # Ollama keep_alive sent with every request. 0 unloads the model right after the call, so
         # the OCR, NER and judge models never coexist in RAM (16 GB budget); -1 keeps it loaded.
         self.ollama_keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "0")
+        # Hidden "thinking" of reasoning models (gemma4): off, otherwise the token budget of short
+        # answers is consumed by reasoning and the visible reply comes back empty.
+        self.ollama_think = os.getenv("OLLAMA_THINK", "0") in ("1", "true", "yes")
         
         # Model used for inference
         # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"
@@ -60,9 +63,17 @@ class Settings:
         # ARAX entity endpoint: GET /entity?q=term -> {term: {"id": {...}, "knowledge_graph": {...}}}.
         self.renci_url = os.getenv("RENCI_URL", "https://name-resolution-sri.renci.org/lookup")
         self.arax_url = os.getenv("ARAX_URL", "https://arax.ncats.io/api/arax/v1.4/entity")
+        # Translator Node Normalizer: clique-preferred id for CURIEs absent from the local table.
+        self.nodenorm_url = os.getenv("NODENORM_URL", "https://nodenorm.transltr.io/1.5/get_normalized_nodes")
 
         # API call limit and concurrency for the resolver lookups
         self.api_limit = int(os.getenv("API_LIMIT", "10"))
+        # RESOLVERS_OFFLINE=1: no text leaves the machine; entities are linked by exact name
+        # against the local KG2c node table only (lower recall, full privacy).
+        self.resolvers_offline = os.getenv("RESOLVERS_OFFLINE", "0") in ("1", "true", "yes")
+        # REVIEW_MODE=1: stop after OCR+NER and wait for the user's review of the entity list
+        # before any term is sent to the resolvers (human in the loop for clinical material).
+        self.review_mode = os.getenv("REVIEW_MODE", "0") in ("1", "true", "yes")
         self.max_concurrent_requests = int(os.getenv("MAX_CONCURRENT_REQUESTS", "4"))
 
         # Filtered RTX-KG2c build (scripts/build_kg2c_parquet.py): edges/nodes/equivalents Parquet.

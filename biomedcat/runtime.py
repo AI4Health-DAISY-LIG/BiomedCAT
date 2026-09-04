@@ -30,6 +30,9 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
         "stream": False,
         # 0 unloads the model after the call so successive stages never stack models in RAM.
         "keep_alive": settings.ollama_keep_alive,
+        # Thinking models (gemma4) otherwise spend the whole num_predict budget on hidden
+        # reasoning and return an empty response; every BiomedCAT prompt is a direct answer.
+        "think": settings.ollama_think,
         "options": {
             "temperature": temperature,
             "num_predict": max_new_tokens,
@@ -96,6 +99,9 @@ def chat(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, tem
         "stream": False,
         # 0 unloads the model after the call so successive stages never stack models in RAM.
         "keep_alive": settings.ollama_keep_alive,
+        # Thinking models (gemma4) otherwise spend the whole num_predict budget on hidden
+        # reasoning and return an empty response; every BiomedCAT prompt is a direct answer.
+        "think": settings.ollama_think,
         "options": {
             "temperature": temperature,
             "num_predict": max_new_tokens
