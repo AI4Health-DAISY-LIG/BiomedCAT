@@ -24,7 +24,13 @@ else:
 # Single source of truth shared by NER (typing), the prompts, and Norm (the judge),
 # so those never drift on what a type label means. Kept here (torch-free) rather than
 # in runtime, so any module can import the vocabulary without pulling in torch.
-ENTITY_TYPES: list[str] = list(biolink_info_flat.keys())
+# Legal verdict vocabulary: every Biolink entity class except deprecated ones (six taxa without
+# a definition, e.g. 'human', 'mammal') and abstract ones (structural nodes such as 'entity',
+# 'biological entity'), which stay in the tree for navigation but cannot be assigned.
+ENTITY_TYPES: list[str] = [
+    k for k, v in biolink_info_flat.items()
+    if not v["metadata"].get("deprecated") and not v["metadata"].get("abstract")
+]
 
 TYPE_DEFINITIONS: dict[str, str] = {k:v["metadata"]["definition"] for k,v in biolink_info_flat.items()}
 
