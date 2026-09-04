@@ -56,6 +56,13 @@ class Settings:
         # (not once per term). "0" disables it. It is a content-safety check, not an injection
         # detector; injection is handled structurally in the NER agent.
         self.document_screening = os.getenv("DOCUMENT_SCREENING", "1") not in ("0", "false", "no")
+        # Existence gate applied once per document to the agent's typed terms, against the
+        # invention of entities by the classifier: "es" rejects terms without any candidate in
+        # the Elasticsearch name resolver, "llm" those a model of another family does not
+        # recognise, "union" (default) either, "off" disables the gate.
+        self.existence_gate = os.getenv("EXISTENCE_GATE", "union")
+        self.existence_model_id = os.getenv("EXISTENCE_MODEL_ID", "llama3:8b")
+        self.nameres_es_url = os.getenv("NAMERES_ES_URL", "https://namelookup-es.ci.transltr.io/lookup")
         # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
 
         # Resolver service URLs (configure via environment if needed).
