@@ -177,10 +177,12 @@ class NERAgentPipeline:
         'gross anatomical structure', 'GrossAnatomicalStructure' all map to the same class).
         """
         # Tolerate the variants small models produce: **FINAL_VERDICT:**, FINAL VERDICT -, Final_Verdict.
-        verdict_match = re.search(r"FINAL[_ ]VERDICT\**\s*[:\-]?\s*\**\s*([^\n]+)", response, re.IGNORECASE)
-        if not verdict_match:
+        # The LAST occurrence is the verdict: the reasoning may quote the rule ("...answer with
+        # the FINAL_VERDICT line") before the actual verdict line.
+        verdict_matches = re.findall(r"FINAL[_ ]VERDICT\**\s*[:\-]?\s*\**\s*([^\n]+)", response, re.IGNORECASE)
+        if not verdict_matches:
             return False, None, "No FINAL_VERDICT found in agent response."
-        raw = verdict_match.group(1).strip().strip("'\"`*.:;,()[] \t").strip()
+        raw = verdict_matches[-1].strip().strip("'\"`*.:;,()[] \t").strip()
         if re.search(r"<script>|\$\{|\{\{|\$\(", raw, re.IGNORECASE):
             return False, None, f"Suspicious verdict line: {raw[:60]}"
         if raw.lower() in ("none", "null", "n/a", "not applicable"):
@@ -214,34 +216,79 @@ class NERAgentPipeline:
         # The query is the agent's description of the term; appending the whole sentence diluted
         # the embedding and returned unrelated classes.
         results = self.rag_engine.search(query, top_k=10)
+        # The raw term is searched too: since the exemplar index holds mentions, the surface
+        # form often retrieves the class directly; both rankings are fused by reciprocal rank.
+        term = getattr(self, "current_term", None)
+        if term and term.strip().lower() != query.strip().lower():
+            fused: Dict[str, float] = {}
+            for ranking in (results, self.rag_engine.search(term, top_k=10)):
+                for rank, c in enumerate(ranking):
+                    fused[c] = fused.get(c, 0.0) + 1.0 / (60 + rank)
+            results = [c for c, _ in sorted(fused.items(), key=lambda kv: -kv[1])][:10]
         if not results:
             return "No relevant biomedical classes found."
-        
+
+        assignable = set(self._type_by_norm.values())
+        # Classes shown to the agent during this term; the closing turn is constrained to them.
+        self._seen_classes.extend(c for c in results if c in assignable and c not in self._seen_classes)
         context_parts = []
-        for res_id in results:
+        for i, res_id in enumerate(results):
             entry = self.rag_engine.flat_data.get(res_id)
             if entry:
                 meta = entry["metadata"]
-                context_parts.append(f"Class: {res_id} | Def: {meta.get('definition', '')}")
-        
+                parent = meta.get("parent") or "named thing"
+                definition = (meta.get("definition") or "").strip().replace("\n", " ")[:220]
+                line = f"Class: {res_id} (a kind of {parent}) | Def: {definition}"
+                # Neighbourhood of the top hits, so the decision rule (most specific class whose
+                # definition holds, else the parent) can be applied without another tool call.
+                children = [c for c in (meta.get("children") or []) if c in assignable]
+                if i < 3 and children:
+                    line += " | Children: " + ", ".join(children[:12])
+                context_parts.append(line)
+
         return "\n".join(context_parts)
 
+    def _describe(self, name: str) -> str:
+        """One line per class: name, short definition, flags for nodes that cannot be a verdict."""
+        entry = self.rag_engine.flat_data.get(name)
+        if not entry:
+            return f"- {name}"
+        meta = entry["metadata"]
+        definition = (meta.get("definition") or "").strip().replace("\n", " ")
+        flag = " [abstract, not assignable]" if meta.get("abstract") else (" [deprecated, not assignable]" if meta.get("deprecated") else "")
+        return f"- {name}{flag}: {definition[:220]}" if definition else f"- {name}{flag}"
+
     def tool_get_class_hierarchy(self, class_name: str) -> str:
-        """Retourne l'arbre complet (parents/enfants/siblings) d'une classe."""
+        """The comparable neighbourhood of a class: parent, children and siblings, each with its definition.
+
+        This is the tool for the navigation step: after a candidate class is found, the agent
+        compares it with its parent (is the candidate too specific?), its children (is there a
+        more specific class that still holds?) and its siblings (is a neighbour a better fit?).
+        """
         logger.info(f"[Agent Tool] Get hierarchy for: {class_name}")
         flat_data = self.rag_engine.flat_data
         if class_name not in flat_data:
             return f"Class {class_name} not found."
 
         meta = flat_data[class_name]["metadata"]
-        hierarchy = {
-            "parent": meta.get("parent"),
-            "ancestors": meta.get("ancestors", []),
-            "children": meta.get("children", []), 
-            "siblings": meta.get("siblings", []),
-            "mixins": meta.get("mixins", [])
-        }
-        return json.dumps(hierarchy, ensure_ascii=False)
+        parent = meta.get("parent")
+        lines = [f"CLASS {self._describe(class_name)[2:]}"]
+        lines.append("PARENT (more general):")
+        lines.append(self._describe(parent) if parent else "- none")
+        children = meta.get("children") or []
+        lines.append(f"CHILDREN (more specific, {len(children)}):")
+        lines.extend(self._describe(c) for c in children[:15]) if children else lines.append("- none")
+        siblings = meta.get("siblings") or []
+        lines.append(f"SIBLINGS (alternatives under the same parent, {len(siblings)}):")
+        lines.extend(self._describe(s) for s in siblings[:15]) if siblings else lines.append("- none")
+        mixins = meta.get("mixins")
+        if mixins:
+            lines.append(f"MIXINS: {mixins if isinstance(mixins, str) else ', '.join(mixins)}")
+        assignable = set(self._type_by_norm.values())
+        for c in [class_name, parent] + list(children[:15]) + list(siblings[:15]):
+            if c and c in assignable and c not in self._seen_classes:
+                self._seen_classes.append(c)
+        return "\n".join(lines)
 
     def _get_tool_executor(self, tool_name: str):
         """Returns the appropriate executor function for a given tool name."""
@@ -331,9 +378,9 @@ class NERAgentPipeline:
             into treatment and keep it ONLY if it has high informative content.
             You have access to three specialized tools that you MUST use.
             TOOLS:
-            1. semantic_context_search(description): the index contains class DEFINITIONS, not entity
-            names, so pass a short description of what the term IS, not the term itself. Good:
-            semantic_context_search(a human gene encoding a transcription factor). Bad: semantic_context_search(DUX4).
+            1. semantic_context_search(description): pass a short description of what the term IS
+            (the term itself is searched as well). Good: semantic_context_search(a human gene encoding
+            a transcription factor). Each result comes with its parent and its child classes.
             2. get_class_hierarchy(class_name): parents, children and siblings of a class, to choose
             between a class and its neighbours (e.g. 'protein' versus 'protein isoform').
             3. lookup_exact_term(class_name): definition of one class whose exact name you already know.
@@ -345,8 +392,10 @@ class NERAgentPipeline:
             spelling; answer FINAL_VERDICT: none.
             PROCESS:
             You have at most 3 steps. Step 1 is always semantic_context_search with a description.
-            Choose the most specific class the term is an instance of, but never a more specific
-            class than the evidence supports (a plain protein is 'protein', not 'protein isoform').
+            DECISION RULE: among the classes returned, take the most specific class whose definition
+            holds for the term; if none of the child classes holds, answer the parent class. Never a
+            more specific class than the evidence supports (a plain protein is 'protein', not
+            'protein isoform'); never a class only because it sounds like the term.
             As soon as a tool result names a class that fits, STOP calling tools and answer with the
             FINAL_VERDICT line: do not verify a class you already recognised.
             Otherwise output a short 'THOUGHT' and then ONE 'ACTION' in the format:
@@ -368,6 +417,8 @@ class NERAgentPipeline:
             logger.info("[Agent] %r: verdict reused from cache (%s)", term_clean, self._verdict_cache[cache_key])
             return self._verdict_cache[cache_key]
 
+        self.current_term = term_clean
+        self._seen_classes: List[str] = []
         system_prompt = self._agent_system_prompt().format(sentence=sentence_int)
         messages = [
             {"role": "system", "content": system_prompt},
@@ -416,14 +467,27 @@ class NERAgentPipeline:
         if verdict is None and len(messages) > 2:
             # The model often knows the class after one or two observations but keeps calling
             # tools; one forced closing turn, no tools allowed, recovers those verdicts cheaply.
-            messages.append({"role": "user", "content": "No more tool calls. Reply with exactly one line: FINAL_VERDICT: <class name>, or FINAL_VERDICT: none if the term is not a biomedical entity."})
-            response = generate(self.classification_model_id, messages, 120, 0.0)
+            # Constrained decision: only the classes seen during this term are eligible, and the
+            # reply is one line with no reasoning (a THOUGHT here used to eat the whole budget).
+            options = ", ".join(self._seen_classes[:40]) or "none"
+            messages.append({"role": "user", "content": (
+                "No more tool calls and no THOUGHT. Apply the decision rule to the classes you have seen: "
+                f"{options}. Reply with exactly one line and nothing else: FINAL_VERDICT: <one of these class names>, "
+                "or FINAL_VERDICT: none if the term is not a biomedical entity.")})
+            response = generate(self.classification_model_id, messages, 60, 0.0)
             logger.info(f"[Agent Final] Response: {response}")
             is_valid, final_verdict, error_msg = self._validate_output(response)
             if is_valid:
                 verdict = final_verdict
             else:
-                logger.warning("[Agent] no verdict for %r after the closing turn: %s", term_clean, error_msg)
+                # Last resort: the reply names a seen class without the verdict line.
+                lowered = response.lower()
+                named = [c for c in self._seen_classes if c.lower() in lowered]
+                if named:
+                    verdict = max(named, key=len)
+                    logger.info("[Agent] verdict recovered from the closing reply for %r: %s", term_clean, verdict)
+                else:
+                    logger.warning("[Agent] no verdict for %r after the closing turn: %s", term_clean, error_msg)
 
         self._verdict_cache[cache_key] = verdict
         return verdict
@@ -462,7 +526,68 @@ class NERAgentPipeline:
                         if final_type and final_type != "NONE":
                             all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
 
-        return all_entities
+        keep = self.existence_gate([e.text for e in all_entities])
+        return [e for e in all_entities if keep.get(e.text.strip().lower(), True)]
+
+    # ---------------------------------------------------------------------------
+    # EXISTENCE GATE (anti-invention), once per document
+    # ---------------------------------------------------------------------------
+
+    def existence_gate(self, terms: List[str]) -> Dict[str, bool]:
+        """Lowercased term -> keep? The classifier invents entities from spelling; a term is
+        dropped when the Elasticsearch name resolver has no candidate at all ("es") and/or when a
+        model of another family does not recognise it ("llm"), per settings.existence_gate.
+        Batched so the second model is loaded once per document, not once per term."""
+        mode = settings.existence_gate
+        # Keyed by the lowercased term, looked up with its original surface form (case matters
+        # to the resolver: DUX4, not dux4).
+        surface = {t.strip().lower(): t.strip() for t in terms if t.strip()}
+        uniq = sorted(surface)
+        keep = {t: True for t in uniq}
+        if mode == "off" or not uniq:
+            return keep
+        if mode in ("es", "union"):
+            for t in uniq:
+                if not self._es_has_candidate(surface[t]):
+                    keep[t] = False
+        if mode in ("llm", "union"):
+            for t in self._llm_unknown_terms([surface[t] for t in uniq if keep[t]]):
+                keep[t] = False
+        rejected = [t for t in uniq if not keep[t]]
+        logger.info("[Gate %s] %d/%d terms rejected: %s", mode, len(rejected), len(uniq), rejected)
+        return keep
+
+    def _es_has_candidate(self, term: str) -> bool:
+        """True when the Elasticsearch name resolver returns at least one candidate (any type).
+        A failed request keeps the term: the gate must never reject on a network error."""
+        from biomedcat.retrieval import _fetch_json
+        data = _fetch_json(settings.nameres_es_url, {"string": term, "limit": 3})
+        return True if data is None else bool(data)
+
+    def _llm_unknown_terms(self, terms: List[str], batch: int = 40) -> List[str]:
+        """Terms the existence model does not recognise as real biomedical entities."""
+        unknown: List[str] = []
+        for start in range(0, len(terms), batch):
+            chunk = terms[start:start + batch]
+            prompt = (
+                "You are a strict biomedical fact checker. For each term below, say whether it names a "
+                "real, existing biomedical entity (gene, protein, drug, chemical, disease, phenotype, "
+                "anatomical structure, organism, process, procedure, device, measurement, or a standard "
+                "biomedical concept) that you know from the literature or from databases. Common medical "
+                "or biological words count as real. Invented, garbled or non-biomedical strings are not.\n"
+                'Answer with a JSON object only: {"unknown": [<terms that are NOT real>]}.\n'
+                "Terms:\n" + "\n".join(f"- {t}" for t in chunk)
+            )
+            reply = generate(settings.existence_model_id, [{"role": "user", "content": prompt}], 600, 0.0)
+            m = re.search(r"\{.*\}", reply, re.DOTALL)
+            try:
+                listed = json.loads(m.group(0)).get("unknown", []) if m else []
+            except (json.JSONDecodeError, AttributeError):
+                logger.warning("[Gate llm] unparsable reply, batch kept: %s", reply[:120])
+                continue
+            lower = {t.lower() for t in chunk}
+            unknown.extend(str(u).strip().lower() for u in listed if str(u).strip().lower() in lower)
+        return unknown
 
 def run_ner_agent(texts: List[str], model: str = settings.classification_model_id, rag: Optional[BiomedRAG] = None) -> List[Entity]:
     """Run the NER agent on one text block per slide and return typed entities with slide provenance.
