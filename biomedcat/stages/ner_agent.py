@@ -33,17 +33,26 @@ class NERAgentPipeline:
         self.rag_engine = rag_unseen
         self.classification_model_id = classification_model_id
         self.sanitization_model_id = sanitization_model_id
-        self.max_agent_steps = 5  # Limite pour éviter les boucles infinies
+        self.max_agent_steps = 3  # a verdict is reached in 1-3 steps in practice; more only loops
         self.MAX_INPUT_LENGTH = 5000
+        self.MAX_NEW_TOKENS = 700  # agent replies average ~500 characters; 5000 only let the model ramble
         self.current_sentence = None  # Pour stocker le contexte courant
+        # Verdict memo per document: the same term ("FSHD", "DUX4") recurs in many sentences and
+        # was re-classified every time. Keyed by the lowercased term; None is cached too so a
+        # term that yields no verdict is not retried at every sentence.
+        self._verdict_cache: Dict[str, Optional[str]] = {}
+        # Case-insensitive map of the Biolink class vocabulary, for verdict normalization.
+        self._type_by_norm = {self._norm_type(t): t for t in ENTITY_TYPES}
         
-        # Charger le modèle SpaCy une seule fois
+        # Load the sentence model once. Without scispaCy, a blank English pipeline with the
+        # rule-based sentencizer keeps the stage functional (segmentation only, no POS tags).
         try:
             self.nlp = spacy.load("en_core_sci_sm")
             logger.info("Successfully loaded scispaCy model")
-        except OSError:
-            logger.warning("scispaCy model not found. Falling back to basic tokenizer.")
-            self.nlp = None
+        except Exception as e:  # missing model (OSError) or a model built for another spaCy version
+            logger.warning("scispaCy model en_core_sci_sm unavailable (%s): using spaCy's rule-based sentencizer instead.", type(e).__name__)
+            self.nlp = spacy.blank("en")
+            self.nlp.add_pipe("sentencizer")
 
     def _filter_and_deduplicate_candidates(self, candidates: List[str]) -> List[str]:
         """Filters and deduplicates extracted terms based on length and content."""
@@ -297,7 +306,11 @@ class NERAgentPipeline:
             
         try:
             doc = self.nlp(sentence)
-            raw_candidates = [token.text for token in doc if token.pos_ in ["NOUN", "PROPN", "ADJ"] and len(token.text) > 2]
+            # Without POS tags (blank pipeline) keep every alphabetic token longer than 2 characters.
+            raw_candidates = [
+                token.text for token in doc
+                if len(token.text) > 2 and (token.pos_ in ["NOUN", "PROPN", "ADJ"] if token.pos_ else token.is_alpha)
+            ]
             return raw_candidates
         except Exception as e:
             logger.warning(f"Raw spaCy extraction failed: {e}")
