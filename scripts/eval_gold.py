@@ -147,6 +147,35 @@ def hier_distance(a: str, b: str, paths: dict[str, list[str]]) -> int | None:
     return (len(pa) - common) + (len(pb) - common)
 
 
+NODENORM_URL = "https://nodenorm.transltr.io/1.5/get_normalized_nodes"
+
+
+def nodenorm_cliques(curies: list[str]) -> dict[str, str | None]:
+    """Map each CURIE to the preferred id of its Translator Node Normalizer clique (None if unknown).
+
+    Two CURIEs name the same concept when their clique ids are equal, whatever the prefixes
+    (OMIM:158900 and MONDO:0008030 both normalize to MONDO:0008030). Conflation is OFF: a gene
+    and its protein stay distinct cliques, as do drugs and chemicals.
+    """
+    import requests
+
+    out: dict[str, str | None] = {}
+    todo = sorted({c for c in curies if c})
+    for i in range(0, len(todo), 50):
+        batch = todo[i:i + 50]
+        try:
+            r = requests.get(NODENORM_URL, params={"curie": batch, "conflate": "false", "drug_chemical_conflate": "false"}, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+        except requests.RequestException as e:
+            print(f"[!] NodeNorm lookup failed for {len(batch)} CURIEs: {e}")
+            data = {}
+        for c in batch:
+            entry = data.get(c)
+            out[c] = entry["id"]["identifier"] if entry else None
+    return out
+
+
 def canonical_ids(curies: list[str], kg_dir: Path) -> dict[str, str | None]:
     table = kg_dir / "equivalents.parquet"
     if not table.is_file() or not curies:
@@ -219,6 +248,8 @@ def score(gold_path: Path, result_path: Path | None, adversarial_path: Path | No
         ]
         all_curies = [g["curie"] for g in gold["positives"]] + [x["curie"] for x in extracted if x["curie"]]
         canon = canonical_ids(sorted(set(all_curies)), kg_dir)
+        clique = nodenorm_cliques(sorted(set(all_curies)))
+        link_clique = 0
 
         rows = []
         exact_found = partial_found = 0
@@ -250,8 +281,12 @@ def score(gold_path: Path, result_path: Path | None, adversarial_path: Path | No
                 row["pred_curie"] = match["curie"]
                 row["curie_exact"] = same_curie(match["curie"], g["curie"])
                 row["curie_canonical"] = bool(canon.get(g["curie"])) and canon.get(g["curie"]) == (match["kg2c_id"] or canon.get(match["curie"]))
+                gold_clique, pred_clique = clique.get(g["curie"]), clique.get(match["curie"])
+                row["gold_clique"], row["pred_clique"] = gold_clique, pred_clique
+                row["curie_same_clique"] = bool(gold_clique) and gold_clique == pred_clique
                 link_exact += row["curie_exact"]
                 link_canon += row["curie_canonical"] or row["curie_exact"]
+                link_clique += row["curie_same_clique"] or row["curie_exact"]
             rows.append(row)
 
         n_gold = len(gold["positives"])
@@ -269,6 +304,8 @@ def score(gold_path: Path, result_path: Path | None, adversarial_path: Path | No
             "mean_hierarchical_distance": round(sum(distances) / len(distances), 2) if distances else None,
             "linking_accuracy_exact_on_found": round(link_exact / n_found, 3) if n_found else None,
             "linking_accuracy_canonical_on_found": round(link_canon / n_found, 3) if n_found else None,
+            "linking_accuracy_nodenorm_clique_on_found": round(link_clique / n_found, 3) if n_found else None,
+            "gold_curies_unknown_to_nodenorm": [g["curie"] for g in gold["positives"] if not clique.get(g["curie"])],
             "rows": rows,
         }
         p = metrics["positives"]
@@ -285,14 +322,17 @@ def score(gold_path: Path, result_path: Path | None, adversarial_path: Path | No
             f"| Mean hierarchical distance (found terms) | {p['mean_hierarchical_distance']} |",
             f"| Linking accuracy, exact CURIE | {p['linking_accuracy_exact_on_found']} |",
             f"| Linking accuracy, canonical KG2c id | {p['linking_accuracy_canonical_on_found']} |",
+            f"| Linking accuracy, same Node Normalizer clique | {p['linking_accuracy_nodenorm_clique_on_found']} |",
+            f"| Gold CURIEs unknown to Node Normalizer | {len(p['gold_curies_unknown_to_nodenorm'])} |",
             "",
-            "| ID | term | match | gold class | pred class | dist | gold CURIE | pred CURIE |",
-            "|---|---|---|---|---|---:|---|---|",
+            "| ID | term | match | gold class | pred class | dist | gold CURIE | pred CURIE | same clique |",
+            "|---|---|---|---|---|---:|---|---|---|",
         ]
         for r in rows:
+            same = "" if "curie_same_clique" not in r else ("yes" if (r["curie_same_clique"] or r.get("curie_exact")) else "no")
             lines.append(
                 f"| {r['id']} | {r['term']} | {r['match']} | {r['gold_class']} | {r.get('pred_class', '')} | "
-                f"{r.get('hier_distance', '')} | {r['gold_curie']} | {r.get('pred_curie', '')} |"
+                f"{r.get('hier_distance', '')} | {r['gold_curie']} | {r.get('pred_curie', '')} | {same} |"
             )
         lines.append("")
 
