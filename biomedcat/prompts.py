@@ -11,7 +11,26 @@ from biomedcat.types import Entity, TYPE_DEFINITIONS
 
 
 # --- OCR ---
-def ocr_description():
+def ocr_description(entity_scope: list[str] | None = None, reading_focus: str = "") -> str:
+    """Slide-reading prompt (description mode).
+
+    The prompt itself is domain-neutral about what to name: the kinds of entities to list
+    exhaustively come from the active profile (`entity_scope`), and `reading_focus` is an
+    optional free-text addition from the same profile. Without a profile the model is only asked
+    to name every distinct component it sees.
+    """
+    if entity_scope:
+        recall = (
+            "Recall requirement: name explicitly every " + ", ".join(entity_scope) +
+            " that is written on the slide or implied by its figures; prefer naming a candidate entity over "
+            "omitting it, and keep symbols, loci and abbreviations exactly as written.\n    "
+        )
+    else:
+        recall = (
+            "Recall requirement: name explicitly every distinct entity written on the slide or implied by its "
+            "figures; prefer naming a candidate over omitting it, and keep symbols and abbreviations as written.\n    "
+        )
+    focus = (reading_focus.strip() + "\n    ") if reading_focus and reading_focus.strip() else ""
     prompt = """Role Definition:
     You are an esteemed Principal Investigator (PI) at a top-tier biomedical research institution.
     Your expertise spans molecular biology, genetics, chemistry, and clinical translational science.
@@ -27,7 +46,7 @@ def ocr_description():
     Synthesize Concepts: Go beyond simple listing; describe the observed phenomena, hypothesize the underlying mechanisms linking structure to function, 
     and articulate how different visual elements support or refute a scientific hypothesis. If multiple similar processes are depicted (e.g., two pathways for FSHD),
     systematically contrast their defining features.
-    Output Constraints:
+    """ + recall + focus + """Output Constraints:
     Your output must be formatted as a numbered list of highly complex scientific statements/concepts.
     Avoid conversational titles, introductory phrases, or summarizing sentences. Each entry must convey a singular, dense concept.
     If any visual element's function is ambiguous, add [UNCLEAR] as a concept prefix."""
