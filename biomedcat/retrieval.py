@@ -1,5 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import requests
 
 from biomedcat.config import settings
@@ -114,6 +115,42 @@ def _merge_and_rank(candidate_lists: list[list[Candidate]]) -> list[Candidate]:
     return merged
 
 
+_EQUIV_CACHE: dict[str, str | None] | None = None
+
+
+def canonicalize(curies: list[str]) -> dict[str, str | None]:
+    """Map CURIEs to canonical RTX-KG2c ids with the offline equivalents table.
+
+    Reads data/kg2c/equivalents.parquet (built by scripts/build_kg2c_parquet.py) through DuckDB,
+    so no network call is needed to align resolver output with the knowledge graph. A CURIE
+    that is not in the filtered graph maps to None. Results are cached per process.
+    """
+    global _EQUIV_CACHE
+    if _EQUIV_CACHE is None:
+        _EQUIV_CACHE = {}
+    missing = [c for c in set(curies) if c not in _EQUIV_CACHE]
+    if missing:
+        table = Path(settings.kg2c_dir) / "equivalents.parquet"
+        if not table.is_file():
+            logger.warning("KG2c equivalents table not found at %s: no canonicalization.", table)
+            for c in missing:
+                _EQUIV_CACHE[c] = None
+        else:
+            import duckdb
+
+            con = duckdb.connect()
+            path = str(table).replace("\\", "/")
+            rows = con.execute(
+                f"SELECT curie, canonical_id FROM read_parquet('{path}') WHERE curie IN (SELECT UNNEST(?))",
+                [missing],
+            ).fetchall()
+            con.close()
+            found = dict(rows)
+            for c in missing:
+                _EQUIV_CACHE[c] = found.get(c)
+    return {c: _EQUIV_CACHE[c] for c in curies}
+
+
 def build_pool(term: str, types: set[str]) -> list[Candidate]:
     """Retrieve and merge the candidate pool for one term.
 
@@ -130,7 +167,12 @@ def build_pool(term: str, types: set[str]) -> list[Candidate]:
         candidate_lists.append(renci_lookup(term, biolink_type=bt))
 
     pool = _merge_and_rank(candidate_lists)
-    logger.info("Retrieval %r: %d unique candidate(s)", term, len(pool))
+    # Attach the KG2c canonical id offline; candidates absent from the filtered graph keep None.
+    canonical = canonicalize([c.curie for c in pool])
+    for cand in pool:
+        cand.kg2c_id = canonical.get(cand.curie)
+    logger.info("Retrieval %r: %d unique candidate(s), %d in KG2c",
+                term, len(pool), sum(1 for c in pool if c.kg2c_id))
     return pool
 
 
