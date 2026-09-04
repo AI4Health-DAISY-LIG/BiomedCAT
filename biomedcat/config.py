@@ -49,6 +49,10 @@ class Settings:
         self.RAG_embedding_model = os.getenv("EMBEDDINGS_MODEL_ID", "NeuML/bioclinical-modernbert-base-embeddings")
         self.classification_model_id = os.getenv("CLASSIFICATION_MODEL_ID", "gemma4:e4b-it-qat")
         self.sanitization_model_id = os.getenv("SANITIZATION_MODEL_ID", "llama-guard3:1b")
+        # Content screening of each slide's text with the sanitization model, once per slide
+        # (not once per term). "0" disables it. It is a content-safety check, not an injection
+        # detector; injection is handled structurally in the NER agent.
+        self.document_screening = os.getenv("DOCUMENT_SCREENING", "1") not in ("0", "false", "no")
         # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
 
         # Resolver service URLs (configure via environment if needed).
