@@ -78,6 +78,17 @@ def _iter_batches(kind: str, source):
         yield convert_from_path(source, first_page=start, last_page=end)
 
 
+def _reading_scope() -> tuple[list[str], str]:
+    """Entity kinds and focus text for the reading prompt, from the active profile (empty if none)."""
+    try:
+        from biomedcat.profiles import load_profile
+
+        profile = load_profile(settings.predicate_profile)
+        return profile.entity_scope, profile.reading_focus
+    except (OSError, ValueError, KeyError):
+        return [], ""
+
+
 def load_model() -> str:
     """Returns the model ID used for external OCR calls."""
     return settings.ocr_model_id
@@ -91,7 +102,7 @@ def _call_ollama_ocr(image: Image.Image, model_id: str) -> str:
         image_bytes = image_buffer.getvalue()
         image_base64_string = base64.b64encode(image_bytes).decode('utf-8')
         image_base64_string = image_base64_string.replace("\n", "").replace("\r", "").strip()
-        messages = [{"role": "user", "content": ocr_description(), "images": [image_base64_string]}]
+        messages = [{"role": "user", "content": ocr_description(*_reading_scope()), "images": [image_base64_string]}]
         result = chat(model_id, messages, 8192, temperature=0.2)
 
         return result
