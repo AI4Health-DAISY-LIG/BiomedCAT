@@ -32,6 +32,9 @@ class BiomedRAG:
         self.data_path = Path(config.internal_data_path) / "biolink_classes_flat.json"
         self.flat_data: Dict[str, Any] = {}
         self.needs_reindexing = force_rebuild or is_empty_dir(config.chroma_db_path)
+        self.exemplars = None
+        # Weight of the exemplar leg in the fusion (RAG_EXEMPLAR_WEIGHT, default 1.0 = same as dense).
+        self.exemplar_weight = float(os.getenv("RAG_EXEMPLAR_WEIGHT", "1.0"))
 
         # Load Models
         # Bind embedding model                                                                                                                          
@@ -85,19 +88,58 @@ class BiomedRAG:
             if not hasattr(self, 'bm25') or self.bm25 is None:                                                                                                                                 
                 self._setup_bm25()
 
+        # Exemplar collection (optional, env RAG_EXEMPLARS or data/biolink_exemplars.parquet);
+        # disabled with RAG_EXEMPLARS=off so the definition-only index can be measured alone.
+        if os.getenv("RAG_EXEMPLARS", "") != "off":
+            try:
+                self._load_exemplars()
+            except Exception as e:
+                logger.error("[!] exemplar index unavailable: %s", e)
 
-
-        # self._load_data()
-
-    INDEX_VERSION = "v2-name-in-doc"  # bump when _doc_text changes; the index is rebuilt when it differs
+    INDEX_VERSION = "v3-aliases-ancestors"  # bump when _doc_text or the indexed set changes
 
     @staticmethod
-    def _doc_text(class_name: str, definition: str, examples_text: str) -> str:
-        """Text indexed for one class, by both the dense and the sparse index."""
-        parts = [f"{class_name}: {definition}".strip(": ")]
-        if examples_text:
-            parts.append(f"Examples: {examples_text}")
+    def _doc_text(class_name: str, meta: Dict[str, Any]) -> str:
+        """Text indexed for one class, by both the dense and the sparse index.
+
+        Name, aliases (e.g. disease: condition, disorder), definition, the ancestor chain (so a
+        query about a 'disease' also touches 'disease or phenotypic feature' documents) and the
+        examples. The examples are the ';'-joined string written by the processor.
+        """
+        parts = [class_name]
+        aliases = meta.get("aliases") or ""
+        if aliases:
+            parts.append(f"also called {aliases}")
+        definition = (meta.get("definition") or "").strip()
+        if definition:
+            parts.append(f": {definition}")
+        ancestors = [a for a in (meta.get("ancestors") or []) if a not in ("entity", "named thing")]
+        if ancestors:
+            parts.append(f"A kind of {' > '.join(ancestors)}.")
+        examples = meta.get("examples") or ""
+        if isinstance(examples, list):
+            examples = "; ".join(examples)
+        if examples:
+            parts.append(f"Examples: {examples}")
         return " ".join(parts)
+
+    @staticmethod
+    def _indexable(meta: Dict[str, Any]) -> bool:
+        """Deprecated and abstract classes are navigation nodes, not retrieval targets."""
+        return not meta.get("deprecated") and not meta.get("abstract")
+
+    @staticmethod
+    def _chroma_metadata(meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Chroma accepts scalars only: lists become comma-joined strings."""
+        out = {}
+        for k, v in meta.items():
+            if isinstance(v, list):
+                out[k] = ", ".join(map(str, v))
+            elif v is None:
+                out[k] = ""
+            else:
+                out[k] = v
+        return out
 
     def _index_is_current(self) -> bool:
         """True when the persisted index was built with the current _doc_text scheme."""
@@ -151,24 +193,26 @@ class BiomedRAG:
         if not self.flat_data:                                                                                                                                                                 
             return                                                                                                                                                                             
                                                                                                                                                                                             
-        logger.info("[*] Initializing BM25 index...")                                                                                                                                                
-        bm25_corpus_tokens = []                                                                                                                                                                
-        self._bm25_corpus_map = []                                                                                                                                                             
-                                                                                                                                                                                            
+        # Without scispaCy the sparse leg tokenizes with a bare regex, returns nothing for half of
+        # the queries and lowers Hit@1 below the dense leg alone (measured): it is disabled then.
+        if self.nlp is None:
+            logger.warning("[!] scispaCy unavailable: sparse (BM25) leg disabled, dense retrieval only.")
+            self.bm25 = None
+            self._bm25_corpus_map = []
+            return
+
+        logger.info("[*] Initializing BM25 index...")
+        bm25_corpus_tokens = []
+        self._bm25_corpus_map = []
         for class_name, entry in self.flat_data.items():
             meta = entry["metadata"]
-            definition = meta.get("definition", "")
-            examples_text = " ".join(meta.get("examples", []))
-            combined_text = self._doc_text(class_name, definition, examples_text)
+            if not self._indexable(meta):
+                continue
+            tokens = self._tokenize(self._doc_text(class_name, meta))
+            bm25_corpus_tokens.append(tokens)
+            self._bm25_corpus_map.append(class_name)
 
-            tokens = self._tokenize(combined_text)                                                                                                                                             
-            bm25_corpus_tokens.append(tokens)                                                                                                                                                  
-            self._bm25_corpus_map.append(class_name)                                                                                                                                           
-                                                                                                                                                                                            
-        if bm25_corpus_tokens:                                                                                                                                                                 
-            self.bm25 = BM25Okapi(bm25_corpus_tokens)                                                                                                                                          
-        else:                                                                                                                                                                                  
-            self.bm25 = None
+        self.bm25 = BM25Okapi(bm25_corpus_tokens) if bm25_corpus_tokens else None
 
     def _build_chroma_index(self) -> None:
         """Construit les index ChromaDB (Dense) et BM21/BM25 (Sparse)."""
@@ -179,16 +223,13 @@ class BiomedRAG:
         dense_metadatas = []
         
         for class_name, entry in self.flat_data.items():
-            # Dense document = class name + definition + examples. The name matters: a query such
-            # as "a protein" must land on 'protein', whose definition alone never says "protein".
             meta = entry["metadata"]
-            definition = meta.get("definition", "")
-            examples_text = " ".join(meta.get("examples", []))
-            doc_text = self._doc_text(class_name, definition, examples_text)
-            
+            if not self._indexable(meta):
+                continue
             dense_ids.append(class_name)
-            dense_documents.append(doc_text)
-            dense_metadatas.append(entry["metadata"])
+            dense_documents.append(self._doc_text(class_name, meta))
+            dense_metadatas.append(self._chroma_metadata(meta))
+        logger.info("[*] %d indexable classes (deprecated and abstract excluded)", len(dense_ids))
 
         # Injection dans ChromaDB
         if dense_ids:
@@ -230,6 +271,9 @@ class BiomedRAG:
             top_indices = np.argsort(scores)[::-1][:top_k]
             sparse_results = [self._bm25_corpus_map[i] for i in top_indices if scores[i] > 0]
 
+        # --- 2b. Exemplar leg: nearest generated mentions, one class per best exemplar ---
+        exemplar_results = self._search_exemplars(query, top_k) if self.exemplars is not None else []
+
         # --- 3. Fusion RRF (Reciprocal Rank Fusion) ---
         # Formule: Score(d) = sum( 1 / (k + rank_dense) + 1 / (k + rank_sparse) )
         k = 60
@@ -241,10 +285,64 @@ class BiomedRAG:
         for rank, class_id in enumerate(sparse_results):
             rrf_scores[class_id] += 1.0 / (k + rank)
 
+        for rank, class_id in enumerate(exemplar_results):
+            rrf_scores[class_id] += self.exemplar_weight / (k + rank)
+
         # Trier les classes par le score RRF final
         sorted_classes = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
         
         return [item[0] for item in sorted_classes[:top_k]]
+
+    # ------------------------------------------------------------------------------------
+    # Exemplar index: mention-to-mention similarity, the leg the definitions cannot provide
+    # ------------------------------------------------------------------------------------
+
+    def _load_exemplars(self) -> None:
+        """Index data/biolink_exemplars.parquet (columns class, exemplar) if present.
+
+        Each exemplar is its own document with the class as metadata; the collection is
+        rebuilt when the file changes (row count or mtime differ from the stored marker).
+        """
+        self.exemplars = None
+        path = Path(os.getenv("RAG_EXEMPLARS") or Path(self.config.internal_data_path) / "biolink_exemplars.parquet")
+        if not path.is_file():
+            return
+        import pyarrow.parquet as pq
+
+        table = pq.read_table(path, columns=["class", "exemplar"])
+        classes = table.column("class").to_pylist()
+        texts = table.column("exemplar").to_pylist()
+        keep = [i for i, c in enumerate(classes) if c in self.flat_data and self._indexable(self.flat_data[c]["metadata"])]
+        marker = Path(self.config.chroma_db_path) / "exemplars_version.txt"
+        stamp = f"{len(keep)}:{int(path.stat().st_mtime)}"
+        collection = self.chroma_client.get_or_create_collection(name="biomedcat_exemplars", embedding_function=self.embedding_fn)
+        if not (marker.is_file() and marker.read_text(encoding="utf-8").strip() == stamp and collection.count() == len(keep)):
+            logger.info("[*] Indexing %d exemplars for %d classes...", len(keep), len(set(classes[i] for i in keep)))
+            if collection.count():
+                self.chroma_client.delete_collection("biomedcat_exemplars")
+                collection = self.chroma_client.get_or_create_collection(name="biomedcat_exemplars", embedding_function=self.embedding_fn)
+            for start in range(0, len(keep), 500):
+                idx = keep[start:start + 500]
+                collection.add(ids=[f"ex{i}" for i in idx], documents=[texts[i] for i in idx], metadatas=[{"class": classes[i]} for i in idx])
+            marker.write_text(stamp, encoding="utf-8")
+        self.exemplars = collection
+        logger.info("[+] Exemplar index ready (%d documents).", collection.count())
+
+    def _search_exemplars(self, query: str, top_k: int) -> List[str]:
+        """Classes ranked by their best-matching exemplar (first occurrence in the nearest list)."""
+        try:
+            res = self.exemplars.query(query_texts=[query], n_results=min(top_k * 6, self.exemplars.count()))
+        except Exception as e:
+            logger.error("[!] exemplar search failed: %s", e)
+            return []
+        ranked: List[str] = []
+        for meta in (res.get("metadatas") or [[]])[0]:
+            c = meta.get("class")
+            if c and c not in ranked:
+                ranked.append(c)
+            if len(ranked) >= top_k:
+                break
+        return ranked
 
     def get_context(self, class_names: List[str]) -> str:
         """
