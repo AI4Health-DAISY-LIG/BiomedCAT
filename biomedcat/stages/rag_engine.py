@@ -45,10 +45,10 @@ class BiomedRAG:
         )
 
         logger.info("[*] Loading scispaCy model for tokenization...")
-        try:                                                                                                                                                                               
-            self.nlp = spacy.load("en_core_sci_sm")                                                                                                                                        
-        except OSError:                                                                                                                                                                    
-            logger.warning("[!] scispaCy model not found. Falling back to basic tokenizer.")                                                                                                        
+        try:
+            self.nlp = spacy.load("en_core_sci_sm")
+        except Exception as e:  # missing model or a model built for another spaCy version
+            logger.warning("[!] scispaCy model unavailable (%s). Falling back to basic tokenizer.", type(e).__name__)
             self.nlp = None
 
         # Indexeurs
@@ -64,12 +64,22 @@ class BiomedRAG:
             self.flat_data = {}
             self.needs_reindexing = True                                                                                                                                                             
                                                                                                                                                                                                           
-        # Indexation                                                                                                                                                                        
-        if self.needs_reindexing:                                                                                                                                                                         
-            logger.info("[*] Reconstruction de l'index ChromaDB en cours...")
+        # A stale index scheme is rebuilt only when RAG_REINDEX=1 is set, so that a running
+        # pipeline sharing the index is never disturbed by another process; a warning says so.
+        if not self.needs_reindexing and not self._index_is_current():
+            if os.getenv("RAG_REINDEX", "0") == "1":
+                self.needs_reindexing = True
+            else:
+                logger.warning("[!] ChromaDB index built with an older scheme; set RAG_REINDEX=1 to rebuild it (%s).", self.INDEX_VERSION)
+
+        if self.needs_reindexing:
+            logger.info("[*] Rebuilding the ChromaDB index (%s)...", self.INDEX_VERSION)
+            if self.collection.count() > 0:
+                self.chroma_client.delete_collection("biomedcat_dense")
+                self.collection = self.chroma_client.get_or_create_collection(name="biomedcat_dense", embedding_function=self.embedding_fn)
             self._build_chroma_index()
-            self._setup_bm25()                                                                                                                               
-            # self.build_indices()                                                                                                                                                                          
+            self._mark_index_version()
+            self._setup_bm25()
         else:                                                                                                                                                                                             
             logger.info("[*] ChromaDB doesn't need existing, charging existing DB.")
             if not hasattr(self, 'bm25') or self.bm25 is None:                                                                                                                                 
@@ -78,6 +88,24 @@ class BiomedRAG:
 
 
         # self._load_data()
+
+    INDEX_VERSION = "v2-name-in-doc"  # bump when _doc_text changes; the index is rebuilt when it differs
+
+    @staticmethod
+    def _doc_text(class_name: str, definition: str, examples_text: str) -> str:
+        """Text indexed for one class, by both the dense and the sparse index."""
+        parts = [f"{class_name}: {definition}".strip(": ")]
+        if examples_text:
+            parts.append(f"Examples: {examples_text}")
+        return " ".join(parts)
+
+    def _index_is_current(self) -> bool:
+        """True when the persisted index was built with the current _doc_text scheme."""
+        marker = Path(self.config.chroma_db_path) / "index_version.txt"
+        return marker.is_file() and marker.read_text(encoding="utf-8").strip() == self.INDEX_VERSION
+
+    def _mark_index_version(self) -> None:
+        (Path(self.config.chroma_db_path) / "index_version.txt").write_text(self.INDEX_VERSION, encoding="utf-8")
 
     def _load_data(self) -> None:
         """Charge les données du fichier JSON produit par biolink_yml_processor"""
@@ -127,12 +155,12 @@ class BiomedRAG:
         bm25_corpus_tokens = []                                                                                                                                                                
         self._bm25_corpus_map = []                                                                                                                                                             
                                                                                                                                                                                             
-        for class_name, entry in self.flat_data.items():                                                                                                                                       
-            meta = entry["metadata"]                                                                                                                                                           
-            definition = meta.get("definition", "")                                                                                                                                            
-            examples_text = " ".join(meta.get("examples", []))                                                                                                                                 
-            combined_text = f"{definition} {examples_text}"                                                                                                                                    
-                                                                                                                                                                                            
+        for class_name, entry in self.flat_data.items():
+            meta = entry["metadata"]
+            definition = meta.get("definition", "")
+            examples_text = " ".join(meta.get("examples", []))
+            combined_text = self._doc_text(class_name, definition, examples_text)
+
             tokens = self._tokenize(combined_text)                                                                                                                                             
             bm25_corpus_tokens.append(tokens)                                                                                                                                                  
             self._bm25_corpus_map.append(class_name)                                                                                                                                           
@@ -151,12 +179,12 @@ class BiomedRAG:
         dense_metadatas = []
         
         for class_name, entry in self.flat_data.items():
-            # 1. Préparation pour l'index Dense (ChromaDB)
-            # On crée un corpus textuel basé sur la définition et les exemples pour le matching mot-clé
+            # Dense document = class name + definition + examples. The name matters: a query such
+            # as "a protein" must land on 'protein', whose definition alone never says "protein".
             meta = entry["metadata"]
             definition = meta.get("definition", "")
             examples_text = " ".join(meta.get("examples", []))
-            doc_text = f"{definition} {examples_text}"
+            doc_text = self._doc_text(class_name, definition, examples_text)
             
             dense_ids.append(class_name)
             dense_documents.append(doc_text)
