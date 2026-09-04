@@ -63,6 +63,7 @@ class ContextGraphParams:
     per_category_cap: int = 300           # kept nodes per Biolink category
     alpha: float = 0.5                    # exponent of the target node's own degree penalty
     exclude_prediction_edges: bool = False
+    max_connectivity_passes: int = 3      # prune islands + refill caps, at most this many times
 
 
 @dataclass
@@ -80,6 +81,7 @@ class ContextGraphResult:
     diameter: int | None
     n_components: int
     seed_pairs_connected: str             # "connected/total"
+    connectivity: dict                    # passes, converged, nodes_removed
     params: dict
     seconds: float
     ranks: dict = field(default_factory=dict)
@@ -169,6 +171,8 @@ def run_context_graph(
     import duckdb
 
     params = params or ContextGraphParams()
+    if not seeds:
+        raise ValueError("No seeds: the normalization stage linked no entity to RTX-KG2c, nothing to expand.")
     profile = load_profile(params.profile or settings.predicate_profile)
     kg_dir = Path(kg_dir or settings.kg2c_dir)
     out_dir = Path(out_dir)
@@ -250,7 +254,7 @@ def run_context_graph(
         ) WHERE rk <= {params.per_category_cap}
         """
     )
-    con.execute("CREATE TABLE kept_ids AS SELECT node AS id FROM kept UNION SELECT seed FROM seeds WHERE seed IN (SELECT id FROM nodes)")
+    connectivity = _connectivity_passes(con, params)
 
     # ---- exports ---------------------------------------------------------------------
     seed_by_id = {s.kg2c_id: s for s in seeds}
@@ -332,6 +336,7 @@ def run_context_graph(
         diameter=graph_metrics["diameter"],
         n_components=graph_metrics["n_components"],
         seed_pairs_connected=graph_metrics["seed_pairs_connected"],
+        connectivity=connectivity,
         params=asdict(params),
         seconds=round(time.perf_counter() - t0, 1),
         ranks=ranks,
@@ -340,6 +345,63 @@ def run_context_graph(
     logger.info("context graph [%s]: %d nodes, %d edges, diameter %s, %d component(s), %.1f s -> %s",
                 profile.name, result.n_nodes, result.n_edges, result.diameter, result.n_components, result.seconds, out_dir)
     return result
+
+
+def _connectivity_passes(con, params: ContextGraphParams) -> dict:
+    """Drop kept nodes that no longer connect to a seed, refill the category caps, repeat.
+
+    The per-category cap can cut the intermediate node through which another kept node was
+    reached, leaving islands. Each pass computes the nodes reachable from the seeds through
+    kept edges only (a breadth-first search inside DuckDB), removes the others, and refills
+    each category with the next best candidates. Refilled nodes may themselves be unconnected,
+    hence the loop, bounded by `max_connectivity_passes`; when the bound is hit the result is
+    flagged so the user knows the graph may still contain islands.
+    """
+    con.execute("CREATE OR REPLACE TABLE excluded (node VARCHAR)")
+    passes = 0
+    removed_total = 0
+    converged = False
+    while passes < params.max_connectivity_passes:
+        passes += 1
+        con.execute("CREATE OR REPLACE TABLE kept_ids AS SELECT node AS id FROM kept UNION SELECT seed AS id FROM seeds WHERE seed IN (SELECT id FROM nodes)")
+        # BFS from the seeds over kept edges only.
+        con.execute("CREATE OR REPLACE TABLE conn AS SELECT seed AS node FROM seeds WHERE seed IN (SELECT id FROM kept_ids)")
+        while True:
+            n_before = con.execute("SELECT COUNT(*) FROM conn").fetchone()[0]
+            con.execute(
+                """
+                INSERT INTO conn
+                SELECT DISTINCT u.b FROM und u
+                JOIN conn c ON u.a = c.node
+                WHERE u.b IN (SELECT id FROM kept_ids) AND u.b NOT IN (SELECT node FROM conn)
+                """
+            )
+            if con.execute("SELECT COUNT(*) FROM conn").fetchone()[0] == n_before:
+                break
+        removed = con.execute("SELECT COUNT(*) FROM kept WHERE node NOT IN (SELECT node FROM conn)").fetchone()[0]
+        if removed == 0:
+            converged = True
+            break
+        removed_total += removed
+        con.execute("INSERT INTO excluded SELECT node FROM kept WHERE node NOT IN (SELECT node FROM conn)")
+        con.execute("DELETE FROM kept WHERE node NOT IN (SELECT node FROM conn)")
+        # Refill each category up to the cap with the next best candidates never excluded.
+        con.execute(
+            f"""
+            INSERT INTO kept
+            SELECT * EXCLUDE (rk, have) FROM (
+                SELECT s.*, k.have,
+                       ROW_NUMBER() OVER (PARTITION BY s.category ORDER BY s.score DESC, s.coverage DESC, s.hop ASC) AS rk
+                FROM scored s
+                LEFT JOIN (SELECT category, COUNT(*) AS have FROM kept GROUP BY category) k USING (category)
+                WHERE s.node NOT IN (SELECT node FROM kept) AND s.node NOT IN (SELECT node FROM excluded)
+            ) WHERE rk <= {params.per_category_cap} - COALESCE(have, 0)
+            """
+        )
+    con.execute("CREATE OR REPLACE TABLE kept_ids AS SELECT node AS id FROM kept UNION SELECT seed AS id FROM seeds WHERE seed IN (SELECT id FROM nodes)")
+    if not converged:
+        logger.warning("connectivity pruning stopped after %d pass(es) without converging: the graph may contain islands", passes)
+    return {"passes": passes, "converged": converged, "nodes_removed": int(removed_total)}
 
 
 def _graph_metrics(graphml_path: Path, node_rows, edge_rows, seeds: list[Seed], present: list[str]) -> dict:
@@ -420,6 +482,7 @@ if __name__ == "__main__":
     parser.add_argument("--per-category-cap", type=int, default=300)
     parser.add_argument("--alpha", type=float, default=0.5)
     parser.add_argument("--no-predictions", action="store_true", help="Drop edges with knowledge_level = prediction.")
+    parser.add_argument("--max-connectivity-passes", type=int, default=3)
     parser.add_argument("--find", default=None, help="Comma-separated KG2c ids whose presence is reported.")
     parser.add_argument("--kg-dir", default=None)
     args = parser.parse_args()
@@ -443,6 +506,7 @@ if __name__ == "__main__":
             per_category_cap=args.per_category_cap,
             alpha=args.alpha,
             exclude_prediction_edges=args.no_predictions,
+            max_connectivity_passes=args.max_connectivity_passes,
         ),
         kg_dir=args.kg_dir,
         find_ids=[s.strip() for s in args.find.split(",")] if args.find else None,
