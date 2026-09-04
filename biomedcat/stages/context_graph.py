@@ -385,7 +385,9 @@ def _connectivity_passes(con, params: ContextGraphParams) -> dict:
         removed_total += removed
         con.execute("INSERT INTO excluded SELECT node FROM kept WHERE node NOT IN (SELECT node FROM conn)")
         con.execute("DELETE FROM kept WHERE node NOT IN (SELECT node FROM conn)")
-        # Refill each category up to the cap with the next best candidates never excluded.
+        # Refill each category up to the cap with the next best candidates never excluded,
+        # restricted to nodes adjacent to the connected set: a refilled node is then connected
+        # by construction, so the next pass removes nothing and the loop converges.
         con.execute(
             f"""
             INSERT INTO kept
@@ -395,6 +397,7 @@ def _connectivity_passes(con, params: ContextGraphParams) -> dict:
                 FROM scored s
                 LEFT JOIN (SELECT category, COUNT(*) AS have FROM kept GROUP BY category) k USING (category)
                 WHERE s.node NOT IN (SELECT node FROM kept) AND s.node NOT IN (SELECT node FROM excluded)
+                  AND s.node IN (SELECT DISTINCT u.b FROM und u JOIN conn c ON u.a = c.node)
             ) WHERE rk <= {params.per_category_cap} - COALESCE(have, 0)
             """
         )
