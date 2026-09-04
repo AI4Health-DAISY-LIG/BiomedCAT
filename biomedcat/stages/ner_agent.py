@@ -80,115 +80,112 @@ class NERAgentPipeline:
     # SECURITY (Sentinel, Sanitizer & Output Guard)
     # ---------------------------------------------------------------------------
 
+    @staticmethod
+    def _norm_type(name: str) -> str:
+        """'biolink:GrossAnatomicalStructure', 'Gross Anatomical Structure' -> 'grossanatomicalstructure'."""
+        name = (name or "").strip().replace("biolink:", "")
+        return re.sub(r"[\s_\-]", "", name).lower()
+
+    INJECTION_PATTERNS = [
+        r"ignore (all|previous|prior) instructions",
+        r"system override",
+        r"forget your tools",
+        r"new instructions",
+        r"disregard (all|previous|prior)",
+    ]
+
+    def screen_document(self, text: str, page: int) -> bool:
+        """Content screening of one slide with the sanitization model (LlamaGuard), once per slide.
+
+        Runs only when settings.document_screening is on. The classifier judges content safety,
+        not prompt injection: injection is handled structurally (read-only tools, whitelisted
+        verdicts, neutralized control keywords). Fail-open on a classifier error, with a warning,
+        so that a missing model never silently empties a document.
+        """
+        if not settings.document_screening or not self.sanitization_model_id or not text.strip():
+            return True
+        try:
+            reply = generate(self.sanitization_model_id, [{"role": "user", "content": text[: self.MAX_INPUT_LENGTH]}], 50, 0).lower()
+            if "unsafe" in reply:
+                logger.warning("[SECURITY ALERT] slide %d flagged unsafe by %s: skipped", page, self.sanitization_model_id)
+                return False
+        except Exception as e:
+            logger.error("[SECURITY] screening model error on slide %d (%s): continuing without screening", page, e)
+        return True
+
     def _is_input_safe(self, term: str, sentence: str) -> Tuple[bool, str, str]:
+        """Structural sanitization of one (term, sentence) pair; returns (ok, term, sentence).
+
+        Nothing here rejects biology. Oversized inputs are refused; control characters are
+        removed; the agent's own control keywords (ACTION:, FINAL_VERDICT:, OBSERVATION:) and
+        the usual injection phrases are neutralized in place and logged, instead of dropping the
+        term, because the agent only has read-only ontology tools and a whitelisted output: an
+        injected slide can at worst mistype its own entities.
         """
-        Phase 1 (Sanitizer): Vérification structurelle et nettoyage rapide.
-        Phase 2 (Sentinel): Analyse sémantique via LlamaGuard.
-        
-        Retourne: (is_safe, sanitized_term, sanitized_sentence)
-        """
-        # --- PHASE 1: SANITIZER (Local Regex/String) ---
-        
-        # 1. Validation de la taille (DoS Protection)
         if len(term) > self.MAX_INPUT_LENGTH or len(sentence) > self.MAX_INPUT_LENGTH:
             logger.warning("[SECURITY] Input too large. Rejecting to prevent DoS.")
             return False, "", ""
 
-        # 2. Nettoyage des caractères de contrôle uniquement (Preserve scientific symbols)
         def clean_control_chars(text: str) -> str:
             return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
         term_clean = clean_control_chars(term).strip()
         sentence_clean = clean_control_chars(sentence).strip()
 
-        # 3. Protection de la structure (Structural Integrity)
-        forbidden_keywords = ["ACTION:", "FINAL_VERDICT:", "OBSERVATION:"]
-        for kw in forbidden_keywords:
-            if kw in term_clean.upper() or kw in sentence_clean.upper():
-                logger.warning(f"[SECURITY] Forbidden keyword '{kw}' detected in input!")
-                return False, "", ""
-
-        # 4. Détection de patterns d'injection (Pattern Matching)
-        injection_patterns = [
-            r"ignore all instructions",
-            r"system override",
-            r"forget your tools",
-            r"new instructions",
-            r"disregard previous"
-        ]
-        for pattern in injection_patterns:
+        for kw in ("ACTION:", "FINAL_VERDICT:", "OBSERVATION:"):
+            pattern = re.compile(re.escape(kw), re.IGNORECASE)
+            if pattern.search(term_clean) or pattern.search(sentence_clean):
+                logger.warning("[SECURITY] control keyword %r in input: neutralized", kw)
+                term_clean = pattern.sub(kw[:-1] + " -", term_clean)
+                sentence_clean = pattern.sub(kw[:-1] + " -", sentence_clean)
+        for pattern in self.INJECTION_PATTERNS:
             if re.search(pattern, term_clean + " " + sentence_clean, re.IGNORECASE):
-                logger.warning(f"[SECURITY] Injection pattern '{pattern}' detected!")
-                return False, "", ""
-
-        # --- PHASE 2: SENTINEL (LlamaGuard) ---
-        content = f"Sentence: {sentence_clean}\nTerm: {term_clean}"
-        messages = [{"role": "user", "content": content}]
-        try:
-            response = generate(self.sanitization_model_id, messages, 50, 0).lower()
-            if "unsafe" in response:
-                logger.warning(f"[SECURITY ALERT] LlamaGuard flagged input as UNSAFE! Term: '{term_clean}'")
-                return False, "", ""
-            return True, term_clean, sentence_clean
-        except Exception as e:
-            # En cas d'erreur du modèle de sécurité, on adopme une approche "Fail-Closed" (on refuse)
-            logger.error(f"[SECURITY ERROR] Error during sanitization: {e}")
+                logger.warning("[SECURITY] injection phrase %r in input: neutralized", pattern)
+                term_clean = re.sub(pattern, "[redacted]", term_clean, flags=re.IGNORECASE)
+                sentence_clean = re.sub(pattern, "[redacted]", sentence_clean, flags=re.IGNORECASE)
+        if not term_clean:
             return False, "", ""
+        return True, term_clean, sentence_clean
 
-    def _validate_tool_argument(self, tool_name: str, arg: str) -> Tuple[bool, str]:
+    def _validate_tool_argument(self, tool_name: str, arg: str) -> Tuple[bool, str, str]:
+        """Clean and validate a tool argument; returns (ok, message, cleaned argument).
+
+        The tools are read-only lookups in an in-memory ontology and a local vector index, so
+        there is no path or command to protect: the checks only keep arguments short and map
+        class names onto the vocabulary. Keyword-style arguments the model sometimes writes,
+        class_name="treatment", are unwrapped.
         """
-        Couche de Sandboxing : Validation stricte des arguments extraits par l'agent.
-        Empêche le path traversal et l'exécution d'arguments non autorisés.
-        """
-        # 1. Protection globale contre le path traversal (interdiction de . et /)
-        if any(char in arg for char in [".", "/", "\\"]):
-            return False, "Security Violation: Path traversal characters (., /, \\) are forbidden."
+        arg = re.sub(r'^\s*\w+\s*=\s*', "", arg).strip().strip("'\"").strip()
+        if not arg or len(arg) > 300:
+            return False, "Empty or oversized argument.", arg
 
-        # 2. Validation spécifique par outil
-        if tool_name == "lookup_exact_term":
-            # Autorise uniquement alphanumérique et symboles biologiques de base
-            if not re.match(r"^[a-zA-Z0-9\s\+\-\(\)\_\!]+$", arg):
-                return False, "Invalid characters in term. Only alphanumeric and biological symbols allowed."
-            return True, ""
-
-        elif tool_name == "get_class_hierarchy":
-            # Whitelist : La classe doit exister dans l'ontologie chargée
-            if arg not in self.rag_engine.flat_data:
-                return False, f"Class '{arg}' not an authorized class."
-            return True, ""
-
-        elif tool_name == "semantic_context_search":
-            # Pour la recherche sémantique, on est plus permissif mais on garde la protection path traversal ci-dessus
-            return True, ""
-
-        return False, f"No validator defined for tool: {tool_name}"
+        if tool_name in ("lookup_exact_term", "semantic_context_search"):
+            return True, "", arg
+        if tool_name == "get_class_hierarchy":
+            canonical = self._type_by_norm.get(self._norm_type(arg))
+            if canonical is None:
+                return False, f"Class '{arg}' is not a Biolink class; use semantic_context_search to find candidate classes.", arg
+            return True, "", canonical
+        return False, f"No validator defined for tool: {tool_name}", arg
 
     def _validate_output(self, response: str) -> Tuple[bool, Optional[str], str]:
-        """
-        Phase 4 (Output Guard): Validation de la réponse finale de l'agent.
-        Vérifie l'absence d'injection et la validité du verdict par rapport à la whitelist.
-        """
-        # 1. Contrôle de la structure (Protection contre injection SQL/NoSQL/Template)
-        suspicious_patterns = [
-            r";", r"--", r"/\*", r"\*/",  # SQL comments / multi-line
-            r"DROP\s+", r"DELETE\s+", r"UPDATE\s+", # Destructive commands
-            r"\$\{", r"\$\(", r"\{\{", # Template injection (Jinja/Mustache)
-            r"###", r"<html>", r"<script>"  # Markdown/Format injection protection
-        ]
-        for pattern in suspicious_patterns:
-            if re.search(pattern, response, re.IGNORECASE):
-                return False, None, f"Suspicious pattern detected in agent output: {pattern}"
+        """Extract and normalize the FINAL_VERDICT; returns (ok, canonical class name, message).
 
-        # 2. Extraction et vérification de la Whitelist (Verdict Validation)
-        verdict_match = re.search(r"FINAL_VERDICT:\s*([A-Za-z0-9_ ]+)", response)
+        Only the verdict line is inspected: the model's reasoning legitimately contains ';',
+        '--' or markdown. The verdict is matched to the Biolink vocabulary case-insensitively,
+        with or without the biolink: prefix, spaced or CamelCase ('Gene', 'biolink:Gene',
+        'gross anatomical structure', 'GrossAnatomicalStructure' all map to the same class).
+        """
+        verdict_match = re.search(r"FINAL_VERDICT:\s*([^\n]+)", response)
         if not verdict_match:
             return False, None, "No FINAL_VERDICT found in agent response."
-
-        verint = verdict_match.group(1).strip()
-        if verint not in ENTITY_TYPES:
-            return False, None, f"Verdict '{verint}' is not a valid entity type (Whitelist violation)."
-
-        return True, verint, ""
+        raw = verdict_match.group(1).strip().strip("'\"`*.:;,()[] \t").strip()
+        if re.search(r"<script>|\$\{|\{\{|\$\(", raw, re.IGNORECASE):
+            return False, None, f"Suspicious verdict line: {raw[:60]}"
+        canonical = self._type_by_norm.get(self._norm_type(raw))
+        if canonical is None:
+            return False, None, f"Verdict '{raw[:60]}' is not a Biolink class."
+        return True, canonical, ""
 
     # ---------------------------------------------------------------------------
     # TOOLS
@@ -211,10 +208,9 @@ class NERAgentPipeline:
     def tool_semantic_context_search(self, query: str) -> str:
         """Interroges le moteur Hybrid RAG (Dense + Sparse) avec contexte."""
         logger.info(f"[Agent Tool] Semantic search: {query}")
-        # Ajouter le contexte de la phrase à la requête
-        enhanced_query = f"{query} (context: {self.current_sentence})" if self.current_sentence else query
-        
-        results = self.rag_engine.search(enhanced_query, top_k=10) 
+        # The query is the agent's description of the term; appending the whole sentence diluted
+        # the embedding and returned unrelated classes.
+        results = self.rag_engine.search(query, top_k=10)
         if not results:
             return "No relevant biomedical classes found."
         
@@ -332,59 +328,65 @@ class NERAgentPipeline:
             into treatment and keep it ONLY if it has high informative content.
             You have access to three specialized tools that you MUST use.
             TOOLS:
-            1. lookup_exact_term(term): Use this for specific terms like 'TP53'.
-            2. semantic_context_search(query): Use this for fuzzy concepts or when unsure.
-            3. get_class_hierarchy(class_name): Use this to see parents, children, and siblings
-            to verify if a term fits a category.
+            1. semantic_context_search(description): the index contains class DEFINITIONS, not entity
+            names, so pass a short description of what the term IS, not the term itself. Good:
+            semantic_context_search(a human gene encoding a transcription factor). Bad: semantic_context_search(DUX4).
+            2. get_class_hierarchy(class_name): parents, children and siblings of a class, to choose
+            between a class and its neighbours (e.g. 'protein' versus 'protein isoform').
+            3. lookup_exact_term(class_name): definition of one class whose exact name you already know.
             PROCESS:
-            For each step, you must output your 'THOUGHT' (reasoning) and then an 'ACTION' in the format:
+            You have at most 3 steps. Step 1 is always semantic_context_search with a description.
+            Choose the most specific class the term is an instance of, but never a more specific
+            class than the evidence supports (a plain protein is 'protein', not 'protein isoform').
+            As soon as a tool result names a class that fits, answer.
+            For each step, output a short 'THOUGHT' and then ONE 'ACTION' in the format:
             ACTION: tool_name(argument)
-            When you are certain of the type, end your response with exactly:
-            FINAL_VERDICT: <TYPE>"""
+            When you know the type, end your response with exactly this line, using the class name
+            exactly as returned by the tools (lowercase, with spaces):
+            FINAL_VERDICT: <class name>"""
         )
 
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
         """The ReAct loop: Thought -> Action -> Observation."""
         
-        # --- SECURITY CHECK (Sanitizer + Sentinel) ---
         is_safe, term_clean, sentence_int = self._is_input_safe(term, sentence)
         if not is_safe:
             return None
 
-        # Créer le prompt système avec le contexte
+        cache_key = term_clean.lower()
+        if cache_key in self._verdict_cache:
+            logger.info("[Agent] %r: verdict reused from cache (%s)", term_clean, self._verdict_cache[cache_key])
+            return self._verdict_cache[cache_key]
+
         system_prompt = self._agent_system_prompt().format(sentence=sentence_int)
-        
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Sentence: {sentence_int}\nTerm to classify: {term_clean}"}
         ]
 
+        verdict: Optional[str] = None
         for step in range(self.max_agent_steps):
-            response = generate(self.classification_model_id, messages, 5000, 0.0)
+            response = generate(self.classification_model_id, messages, self.MAX_NEW_TOKENS, 0.0)
             messages.append({"role": "assistant", "content": response})
-            
             logger.info(f"[Agent Step {step+1}] Response: {response}")
 
-            # On utilise le validateur comme unique point d'entrée pour interpréter la fin du cycle
             is_valid, final_verdict, error_msg = self._validate_output(response)
             if is_valid:
-                return final_verdict
-            
-            # Si un verdict a été tenté mais est invalide (Security Alert)
+                verdict = final_verdict
+                break
             if "FINAL_VERDICT" in response.upper():
-                logger.warning(f"[SECURITY ALERT] Agent output failed validation: {error_msg}")
-                return None
+                # An unrecognized class name: tell the agent once, let it correct itself.
+                logger.warning("[Agent] verdict rejected for %r: %s", term_clean, error_msg)
+                messages.append({"role": "user", "content": f"OBSERVATION: {error_msg} Answer with FINAL_VERDICT: <exact Biolink class name>."})
+                continue
 
             action_match = re.search(r"ACTION:\s*(\w+)\((.*)\)", response)
             if action_match:
                 tool_name = action_match.group(1)
-                arg_str = action_match.group(2).strip().strip("'").strip('"')
-
-                # --- SANDBOXING LAYER: Argument Validation ---
-                is_valid, error_msg = self._validate_tool_argument(tool_name, arg_str)
+                is_valid, error_msg, arg_str = self._validate_tool_argument(tool_name, action_match.group(2))
                 if not is_valid:
                     observation = f"Error: {error_msg}"
-                    logger.warning(f"[SECURITY ALERT] Agent attempted invalid tool call: {tool_name}({arg_str}) -> {error_msg}")
+                    logger.warning("[Agent] invalid tool call %s(%s): %s", tool_name, arg_str, error_msg)
                 else:
                     # --- TOOL EXECUTION DELEGATION ---
                     executor = self._get_tool_executor(tool_name)
@@ -401,7 +403,8 @@ class NERAgentPipeline:
                 logger.warning("Agent failed to provide an ACTION or FINAL_VERDICT.")
                 break
 
-        return None
+        self._verdict_cache[cache_key] = verdict
+        return verdict
 
     def extract(self, text: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
@@ -459,6 +462,8 @@ def run_ner_agent(texts: List[str], model: str = settings.classification_model_i
         if not text or not text.strip():
             continue
         logger.info("NER on slide %d: %r", page, text[:150])
+        if not agent.screen_document(text, page):
+            continue
         try:
             for entity in agent.extract([text]):
                 entity.page = page
