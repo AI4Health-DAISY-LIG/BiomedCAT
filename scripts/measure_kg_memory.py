@@ -5,8 +5,8 @@ Two numbers are reported, both as resident set size (RSS) deltas of this process
 
   1. igraph in memory: the filtered graph loaded from Parquet into a python-igraph object
      with the attributes the context-graph stage needs (id, name, category on vertices;
-     predicate_code and weight on edges). This is the upper bound: the whole filtered
-     graph resident at once.
+     predicate_code on edges -- edge weight is a profile concept computed at query time, not
+     stored in the Parquet). This is the upper bound: the whole filtered graph resident at once.
   2. DuckDB out-of-core: a bounded k-hop neighborhood query around a seed set executed
      directly on the Parquet files, without a graph object. This is what the context-graph
      stage actually does; the graph never has to be fully resident.
@@ -40,7 +40,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", default="NCBIGene:100288687,MONDO:0008030", help="Comma-separated seed CURIEs.")
     parser.add_argument("--hops", type=int, default=2, help="Neighborhood radius (default 2).")
     parser.add_argument("--hub-cap", type=int, default=500, help="Do not expand nodes with degree above this.")
-    parser.add_argument("--min-weight", type=float, default=0.0, help="Ignore edges below this weight during expansion.")
     parser.add_argument("--skip-igraph", action="store_true", help="Only run the DuckDB measurement.")
     parser.add_argument("--save-pickle", default=None, help="Optional path to save the igraph object.")
     parser.add_argument("--out", default=None, help="Optional JSON path for the measurements (default: <kg-dir>/memory.json).")
@@ -72,7 +71,7 @@ def measure_igraph(kg_dir: Path, process: psutil.Process, save_pickle: str | Non
     ids = nodes.column("id").to_pylist()
     index = {node_id: i for i, node_id in enumerate(ids)}
 
-    edges = pq.read_table(kg_dir / "edges.parquet", columns=["subject", "object", "predicate_code", "weight"])
+    edges = pq.read_table(kg_dir / "edges.parquet", columns=["subject", "object", "predicate_code"])
     src = [index[s] for s in edges.column("subject").to_pylist()]
     dst = [index[o] for o in edges.column("object").to_pylist()]
 
@@ -82,7 +81,6 @@ def measure_igraph(kg_dir: Path, process: psutil.Process, save_pickle: str | Non
     graph.vs["name"] = nodes.column("name").to_pylist()
     graph.vs["category"] = nodes.column("category").to_pylist()
     graph.es["predicate_code"] = edges.column("predicate_code").to_pylist()
-    graph.es["weight"] = edges.column("weight").to_pylist()
     del edges, nodes, index
     gc.collect()
 
@@ -114,9 +112,13 @@ def measure_igraph(kg_dir: Path, process: psutil.Process, save_pickle: str | Non
 # ----------------------------------------------------------------------------------------
 
 def measure_duckdb_neighborhood(
-    kg_dir: Path, seeds: list[str], hops: int, hub_cap: int, min_weight: float, process: psutil.Process
+    kg_dir: Path, seeds: list[str], hops: int, hub_cap: int, process: psutil.Process
 ) -> dict:
-    """Undirected k-hop expansion from the seeds, skipping hubs, entirely inside DuckDB."""
+    """Undirected k-hop expansion from the seeds, skipping hubs, entirely inside DuckDB.
+
+    Unweighted: an accurate edge weight requires a loaded profile (biomedcat.profiles), out of
+    scope for this size upper-bound. Every structurally-kept edge counts equally here.
+    """
     import duckdb
 
     gc.collect()
@@ -125,7 +127,7 @@ def measure_duckdb_neighborhood(
 
     edges = str(kg_dir / "edges.parquet").replace("\\", "/")
     con = duckdb.connect()
-    con.execute(f"CREATE VIEW e AS SELECT subject, object, weight FROM read_parquet('{edges}') WHERE weight >= {min_weight}")
+    con.execute(f"CREATE VIEW e AS SELECT subject, object FROM read_parquet('{edges}')")
     con.execute(
         """
         CREATE TABLE deg AS
@@ -184,7 +186,6 @@ def measure_duckdb_neighborhood(
         "missing_seeds": missing,
         "hops": hops,
         "hub_cap": hub_cap,
-        "min_weight": min_weight,
         "per_hop": per_hop,
         "neighborhood_nodes": int(n_nodes),
         "neighborhood_edges": int(n_edges),
@@ -209,7 +210,7 @@ def main() -> int:
     results = {"kg_dir": str(kg_dir), "baseline_rss_gb": round(rss_gb(process), 2)}
     # DuckDB first: it must be measured from a clean process, not after igraph freed memory.
     results["duckdb_neighborhood"] = measure_duckdb_neighborhood(
-        kg_dir, seeds, args.hops, args.hub_cap, args.min_weight, process
+        kg_dir, seeds, args.hops, args.hub_cap, process
     )
     if not args.skip_igraph:
         results["igraph_full_graph"] = measure_igraph(kg_dir, process, args.save_pickle)
