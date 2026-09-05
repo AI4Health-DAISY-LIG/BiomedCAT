@@ -3,25 +3,39 @@
 
 The full KG2c graph (about 6.7 M nodes and 27 M edges in version 2.10.1) does not fit the
 16 GB RAM budget targeted by BiomedCAT once an igraph object, an LLM server and the RAG
-engine coexist. This script streams the KG2c JSONL dumps once and keeps only what the
-context-graph stage will ever traverse:
+engine coexist. This script streams the KG2c JSONL dumps once and keeps everything that is
+*structurally* usable by any preference profile, present or future:
 
-  1. edges whose predicate has a weight >= --min-weight in at least one user preference
-     profile (several --profile files may be given; the union of their predicates is kept and
-     the stored weight is the maximum, profile-specific weights are applied at query time);
+  1. edges whose predicate, and nodes whose category, are not part of the Biolink model
+     itself (--strata, derived from biolink-model.yaml by scripts/build_biolink_strata.py):
+     RTX-KG2c carries a handful of predicates of its own that are not standard Biolink terms
+     (a doubled "biolink_" prefix, e.g. biolink:biolink_treats) -- the graph is aligned to the
+     Biolink version of --strata, not to whatever RTX-KG2c happens to emit;
   2. edges that are not identifier-equivalence links (close_match, same_as, ...), because
      KG2c is already canonicalized and those links carry no biology;
-  3. edges whose primary knowledge source is not in --exclude-sources (SemMedDB by default);
-  4. nodes that still have at least one kept edge (isolated nodes are dropped implicitly).
+  3. edges whose predicate is too generic to ever be informative (related_to and its two
+     at-instance/at-concept-level variants: 2.6 M edges for related_to alone, no biology);
+  4. edges whose primary knowledge source is not in --exclude-sources (SemMedDB by default:
+     literature co-occurrence, the single largest and noisiest source in RTX-KG2);
+  5. nodes that still have at least one kept edge (isolated nodes are dropped implicitly).
+
+This build does *not* know about preference profiles, and that is deliberate: which predicates,
+knowledge sources and Biolink categories matter is a per-user, per-run choice, applied at query
+time by the context-graph stage (biomedcat.profiles, biomedcat.weights) from the profile that is
+active for that run. Baking a profile's scope into this Parquet build would tie its content to
+whichever profiles happened to exist the last time this script ran: a new profile (a new class
+scope built in the console, say) would silently lose the nodes and edges it needs until this
+(slow, whole-dump) script is run again. One build serves every profile, current and future.
 
 Outputs (all under --out-dir):
-  edges.parquet        subject, object, predicate_code (int16), weight (float32),
-                       knowledge_level, agent_type, primary_knowledge_source
+  edges.parquet        subject, object, predicate_code (int16), knowledge_level, agent_type,
+                       primary_knowledge_source. No weight column: edge weights are a profile
+                       concept, computed at query time (biomedcat.stages.context_graph).
   nodes.parquet        id, name, category, all_categories (list<string>)
   equivalents.parquet  curie -> canonical KG2c id, exploded from `equivalent_curies`.
                        This is a local, offline replacement for the Node Normalizer when
                        BiomedCAT CURIEs (e.g. HGNC:50800 for DUX4) must be mapped to KG2c ids.
-  predicates.parquet   predicate_code -> predicate CURIE, weight
+  predicates.parquet   predicate_code -> predicate CURIE, edges kept (n_edges_kept).
   stats.json           counts before/after every filter, peak RSS, wall time
   summary.md           human-readable version of stats.json (for the manuscript)
 
@@ -31,8 +45,6 @@ Usage (from the BiomedCAT root):
   uv run python scripts/build_kg2c_parquet.py \
       --nodes ../mechanism_of_action_learning/data/KG/kg2c-2.10.1-v1.0-nodes.jsonl.gz \
       --edges ../mechanism_of_action_learning/data/KG/kg2c-2.10.1-v1.0-edges.jsonl.gz \
-      --profile data/profiles/biochemical_actions_probs.json \
-      --profile data/profiles/clinical_mechanisms.json \
       --out-dir data/kg2c
 """
 from __future__ import annotations
@@ -52,7 +64,7 @@ import psutil
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from biomedcat.profiles import load_profile
+from biomedcat.weights import BiolinkModel, camel_curie
 
 logger = logging.getLogger("build_kg2c_parquet")
 
@@ -66,7 +78,18 @@ EQUIVALENCE_PREDICATES = frozenset(
         "biolink:narrow_match",
     }
 )
-
+# Roots of the "related to" branch: too generic to ever be informative (related_to alone is
+# 2.6 M edges in KG2c 2.10.1), whatever a profile's scope. biomedcat.weights independently
+# refuses to weight any predicate this shallow for a branch_weights profile (depth < 2); this
+# is the same decision, applied unconditionally, including to a legacy flat profile that lists
+# them explicitly (the uniform baseline does, like it lists the equivalence predicates above).
+TOO_GENERAL_PREDICATES = frozenset(
+    {
+        "biolink:related_to",
+        "biolink:related_to_at_instance_level",
+        "biolink:related_to_at_concept_level",
+    }
+)
 EDGE_CHUNK_ROWS = 1_000_000
 NODE_CHUNK_ROWS = 500_000
 LOG_EVERY_LINES = 2_000_000
@@ -76,16 +99,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nodes", required=True, help="KG2c nodes JSONL (.gz accepted).")
     parser.add_argument("--edges", required=True, help="KG2c edges JSONL (.gz accepted).")
-    parser.add_argument(
-        "--profile", action="append", required=True,
-        help="Predicate -> weight JSON (user preference profile). Repeat to keep the union of several profiles.",
-    )
     parser.add_argument("--out-dir", default="data/kg2c", help="Output directory (default: data/kg2c).")
-    parser.add_argument("--min-weight", type=float, default=0.05, help="Keep predicates with weight >= this in any profile (default 0.05).")
     parser.add_argument(
         "--exclude-sources",
         default="infores:semmeddb",
         help="Comma-separated primary_knowledge_source values to drop (default: infores:semmeddb).",
+    )
+    parser.add_argument(
+        "--strata", default="data/biolink_strata.json",
+        help="Derived Biolink model (scripts/build_biolink_strata.py), used to keep only predicates and "
+             "categories that are actually part of that Biolink version (default: data/biolink_strata.json).",
     )
     parser.add_argument("--kg-version", default="kg2c-2.10.1-v1.0", help="Label stored in stats.json.")
     return parser.parse_args()
@@ -117,32 +140,20 @@ def peak_rss_gb(process: psutil.Process) -> float | None:
         return None
 
 
-def load_profiles(paths: list[str], min_weight: float) -> tuple[dict[str, float], dict[str, list[str]]]:
-    """Union of the profiles' predicates.
+def load_biolink_model_terms(strata_path: str) -> tuple[set[str], set[str], str]:
+    """(valid predicate CURIEs, valid category CURIEs, Biolink version) from the derived strata file.
 
-    Returns ({predicate: max weight over profiles}, {predicate: allowed CURIE prefixes}). A
-    predicate is prefix-restricted in the build only when every profile that uses it restricts
-    it; the allowed prefixes are then the union of the profiles' lists. Profile-specific
-    weights (predicate x source x knowledge level) are applied at query time, not here.
+    A predicate is valid when it is a real Biolink slot: a `kg2c_only` entry (present in some
+    earlier KG2c build but absent from biolink-model.yaml, e.g. the doubled-prefix
+    biolink:biolink_treats -- see scripts/build_biolink_strata.py) does not count. A category is
+    valid when it names an entity class *or* a mixin: RTX-KG2c uses some mixins (e.g.
+    biolink:GenomicEntity) as a node's primary category, even though biomedcat.weights keeps
+    mixins out of the entity-branch scheme used to derive profile weights.
     """
-    kept: dict[str, float] = {}
-    restrictions: dict[str, list[set[str] | None]] = {}
-    for path in paths:
-        profile = load_profile(path)
-        n_kept = 0
-        for pred, w in profile.predicates.items():
-            if w >= min_weight:
-                kept[pred] = max(kept.get(pred, 0.0), w)
-                n_kept += 1
-                prefixes = profile.prefix_restricted_predicates.get(pred)
-                restrictions.setdefault(pred, []).append(set(prefixes) if prefixes else None)
-        logger.info("Profile %s: %d predicates, %d with weight >= %.3f", profile.name, len(profile.predicates), n_kept, min_weight)
-    restricted: dict[str, list[str]] = {}
-    for pred, entries in restrictions.items():
-        if entries and all(e is not None for e in entries):
-            restricted[pred] = sorted(set().union(*entries))
-    logger.info("Union: %d predicates kept, %d prefix-restricted", len(kept), len(restricted))
-    return kept, restricted
+    model = BiolinkModel.load(strata_path)
+    valid_predicates = {info["curie"] for info in model.predicates.values() if not info.get("kg2c_only")}
+    valid_categories = {camel_curie(name) for name in model.classes} | {camel_curie(name) for name in model.mixins}
+    return valid_predicates, valid_categories, model.version
 
 
 # ----------------------------------------------------------------------------------------
@@ -154,7 +165,6 @@ EDGE_SCHEMA = pa.schema(
         ("subject", pa.string()),
         ("object", pa.string()),
         ("predicate_code", pa.int16()),
-        ("weight", pa.float32()),
         ("knowledge_level", pa.dictionary(pa.int8(), pa.string())),
         ("agent_type", pa.dictionary(pa.int8(), pa.string())),
         ("primary_knowledge_source", pa.dictionary(pa.int16(), pa.string())),
@@ -173,16 +183,14 @@ class EdgeWriter:
         self.subject: list[str] = []
         self.object: list[str] = []
         self.code: list[int] = []
-        self.weight: list[float] = []
         self.kl: list[str] = []
         self.agent: list[str] = []
         self.source: list[str] = []
 
-    def add(self, s: str, o: str, code: int, w: float, kl: str, agent: str, src: str) -> None:
+    def add(self, s: str, o: str, code: int, kl: str, agent: str, src: str) -> None:
         self.subject.append(s)
         self.object.append(o)
         self.code.append(code)
-        self.weight.append(w)
         self.kl.append(kl)
         self.agent.append(agent)
         self.source.append(src)
@@ -197,7 +205,6 @@ class EdgeWriter:
                 "subject": pa.array(self.subject, pa.string()),
                 "object": pa.array(self.object, pa.string()),
                 "predicate_code": pa.array(self.code, pa.int16()),
-                "weight": pa.array(self.weight, pa.float32()),
                 "knowledge_level": pa.array(self.kl, pa.string()).dictionary_encode(),
                 "agent_type": pa.array(self.agent, pa.string()).dictionary_encode(),
                 "primary_knowledge_source": pa.array(self.source, pa.string()).dictionary_encode(),
@@ -212,19 +219,15 @@ class EdgeWriter:
         self.writer.close()
 
 
-def pass_edges(
-    edges_path: str,
-    out_dir: Path,
-    profile: dict[str, float],
-    excluded_sources: set[str],
-    process: psutil.Process,
-    restricted: dict[str, list[str]] | None = None,
-) -> tuple[set[str], dict]:
-    """Stream the edge dump once; write kept edges; return the kept node ids and counters."""
-    restricted = restricted or {}
-    predicate_codes = {pred: i for i, pred in enumerate(sorted(profile))}
+def pass_edges(edges_path: str, out_dir: Path, excluded_sources: set[str], valid_predicates: set[str],
+               process: psutil.Process) -> tuple[set[str], dict]:
+    """Stream the edge dump once; write every structurally-kept edge; return the kept node ids.
 
+    Predicate codes are assigned on the fly, in first-seen order: unlike the old profile-driven
+    build, the set of predicates that will survive filtering is not known ahead of the pass.
+    """
     kept_nodes: set[str] = set()
+    predicate_codes: dict[str, int] = {}
     n_total = 0
     n_kept = 0
     dropped_reason = Counter()
@@ -255,9 +258,11 @@ def pass_edges(
             if pred in EQUIVALENCE_PREDICATES:
                 dropped_reason["equivalence_predicate"] += 1
                 continue
-            weight = profile.get(pred)
-            if weight is None:
-                dropped_reason["predicate_below_min_weight_or_absent"] += 1
+            if pred in TOO_GENERAL_PREDICATES:
+                dropped_reason["too_general_predicate"] += 1
+                continue
+            if pred not in valid_predicates:
+                dropped_reason["predicate_not_in_biolink_model"] += 1
                 continue
             source = edge.get("primary_knowledge_source", "") or ""
             if source in excluded_sources:
@@ -267,13 +272,10 @@ def pass_edges(
 
             s = edge["subject"]
             o = edge["object"]
-            prefixes = restricted.get(pred)
-            if prefixes and not (any(s.startswith(p) for p in prefixes) and any(o.startswith(p) for p in prefixes)):
-                dropped_reason["prefix_restricted_predicate"] += 1
-                continue
             kl = edge.get("knowledge_level", "") or ""
             agent = edge.get("agent_type", "") or ""
-            writer.add(s, o, predicate_codes[pred], weight, kl, agent, source)
+            code = predicate_codes.setdefault(pred, len(predicate_codes))
+            writer.add(s, o, code, kl, agent, source)
             kept_nodes.add(s)
             kept_nodes.add(o)
             n_kept += 1
@@ -282,16 +284,19 @@ def pass_edges(
 
     writer.close()
     elapsed = time.perf_counter() - t0
-    logger.info("edges done: %d read, %d kept, %d nodes touched, %.0f s", n_total, n_kept, len(kept_nodes), elapsed)
+    logger.info("edges done: %d read, %d kept, %d nodes touched, %d distinct predicates kept, %.0f s",
+                n_total, n_kept, len(kept_nodes), len(predicate_codes), elapsed)
 
-    # Predicate code table, also written as Parquet for DuckDB joins.
+    # Predicate code table, also written as Parquet for DuckDB joins. No weight column: a
+    # predicate's weight is a profile concept, computed at query time from branch priorities
+    # (biomedcat.weights) or from an explicit profile predicates block, never stored here.
+    preds_sorted = sorted(predicate_codes, key=lambda p: predicate_codes[p])
     pq.write_table(
         pa.table(
             {
-                "predicate_code": pa.array([predicate_codes[p] for p in sorted(profile)], pa.int16()),
-                "predicate": pa.array(sorted(profile), pa.string()),
-                "weight": pa.array([profile[p] for p in sorted(profile)], pa.float32()),
-                "n_edges_kept": pa.array([pred_kept.get(p, 0) for p in sorted(profile)], pa.int64()),
+                "predicate_code": pa.array([predicate_codes[p] for p in preds_sorted], pa.int16()),
+                "predicate": pa.array(preds_sorted, pa.string()),
+                "n_edges_kept": pa.array([pred_kept.get(p, 0) for p in preds_sorted], pa.int64()),
             }
         ),
         str(out_dir / "predicates.parquet"),
@@ -326,8 +331,10 @@ NODE_SCHEMA = pa.schema(
 EQUIV_SCHEMA = pa.schema([("curie", pa.string()), ("canonical_id", pa.string())])
 
 
-def pass_nodes(nodes_path: str, out_dir: Path, kept_nodes: set[str], process: psutil.Process) -> dict:
-    """Stream the node dump once; keep nodes with >= 1 kept edge; explode equivalent CURIEs."""
+def pass_nodes(nodes_path: str, out_dir: Path, kept_nodes: set[str], valid_categories: set[str],
+               process: psutil.Process) -> dict:
+    """Stream the node dump once; keep nodes with >= 1 kept edge and a Biolink-valid category;
+    explode equivalent CURIEs."""
     node_writer = pq.ParquetWriter(str(out_dir / "nodes.parquet"), NODE_SCHEMA, compression="zstd")
     equiv_writer = pq.ParquetWriter(str(out_dir / "equivalents.parquet"), EQUIV_SCHEMA, compression="zstd")
 
@@ -343,6 +350,7 @@ def pass_nodes(nodes_path: str, out_dir: Path, kept_nodes: set[str], process: ps
     n_equiv = 0
     cat_total = Counter()
     cat_kept = Counter()
+    cat_dropped_off_model = Counter()
     t0 = time.perf_counter()
 
     def flush_nodes() -> None:
@@ -385,6 +393,9 @@ def pass_nodes(nodes_path: str, out_dir: Path, kept_nodes: set[str], process: ps
             cat_total[category] += 1
             if node_id not in kept_nodes:
                 continue
+            if category not in valid_categories:
+                cat_dropped_off_model[category] += 1
+                continue
 
             n_kept += 1
             cat_kept[category] += 1
@@ -412,6 +423,7 @@ def pass_nodes(nodes_path: str, out_dir: Path, kept_nodes: set[str], process: ps
     return {
         "nodes_total": n_total,
         "nodes_kept": n_kept,
+        "nodes_dropped_category_not_in_biolink_model": dict(cat_dropped_off_model.most_common()),
         "equivalent_curies_written": n_equiv,
         "nodes_kept_by_category": dict(cat_kept.most_common()),
         "nodes_total_by_category": dict(cat_total.most_common()),
@@ -470,9 +482,14 @@ def write_summary(stats: dict, out_dir: Path) -> None:
     n = stats["nodes"]
     d = stats.get("degrees", {})
     lines = [
-        f"# KG2c filtered build ({stats['kg_version']})",
+        f"# KG2c filtered build ({stats['kg_version']}, aligned to Biolink {stats.get('biolink_version', '?')})",
         "",
-        f"Profiles: {', '.join(stats['profiles'])}; min weight {stats['min_weight']}; excluded sources: {', '.join(stats['excluded_sources'])}",
+        f"Structural filters only, no profile: {stats.get('n_valid_biolink_predicates', '?')} valid predicate(s) and "
+        f"{stats.get('n_valid_biolink_categories', '?')} valid categor(y/ies) per Biolink "
+        f"{stats.get('biolink_version', '?')}; {len(stats['equivalence_predicates_dropped'])} equivalence predicate(s); "
+        f"{len(stats['too_general_predicates_dropped'])} too-general predicate(s); excluded sources: "
+        f"{', '.join(stats['excluded_sources'])}. Profile-specific weights and class scope are applied at query "
+        "time (biomedcat.stages.context_graph).",
         "",
         "| Quantity | Before | After | Kept |",
         "|---|---:|---:|---:|",
@@ -518,12 +535,18 @@ def main() -> int:
     process = psutil.Process(os.getpid())
     t0 = time.perf_counter()
 
-    profile, restricted = load_profiles(args.profile, args.min_weight)
+    if not Path(args.strata).is_file():
+        logger.error("%s not found: run scripts/build_biolink_strata.py first (it derives this file from "
+                     "data/biolink-model.yaml), so the build can be aligned to the Biolink model.", args.strata)
+        return 1
+    valid_predicates, valid_categories, biolink_version = load_biolink_model_terms(args.strata)
+    logger.info("aligned to Biolink %s: %d valid predicate(s), %d valid categor(y/ies)",
+                biolink_version, len(valid_predicates), len(valid_categories))
+
     excluded_sources = {s.strip() for s in args.exclude_sources.split(",") if s.strip()}
 
-    kept_nodes, edge_stats = pass_edges(args.edges, out_dir, profile, excluded_sources, process, restricted)
-    edge_stats["prefix_restricted_predicates"] = restricted
-    node_stats = pass_nodes(args.nodes, out_dir, kept_nodes, process)
+    kept_nodes, edge_stats = pass_edges(args.edges, out_dir, excluded_sources, valid_predicates, process)
+    node_stats = pass_nodes(args.nodes, out_dir, kept_nodes, valid_categories, process)
     del kept_nodes
 
     # A stale degree table from a previous build must not survive a rebuild.
@@ -537,10 +560,12 @@ def main() -> int:
     sizes = {p.name: round(p.stat().st_size / 1024**2, 1) for p in out_dir.glob("*.parquet")}
     stats = {
         "kg_version": args.kg_version,
-        "profiles": args.profile,
-        "min_weight": args.min_weight,
+        "biolink_version": biolink_version,
         "excluded_sources": sorted(excluded_sources),
         "equivalence_predicates_dropped": sorted(EQUIVALENCE_PREDICATES),
+        "too_general_predicates_dropped": sorted(TOO_GENERAL_PREDICATES),
+        "n_valid_biolink_predicates": len(valid_predicates),
+        "n_valid_biolink_categories": len(valid_categories),
         "edges": edge_stats,
         "nodes": node_stats,
         "degrees": deg_stats,

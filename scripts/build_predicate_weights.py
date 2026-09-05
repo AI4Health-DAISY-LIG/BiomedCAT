@@ -66,7 +66,7 @@ def main() -> int:
     if args.dry_run:
         bw = W.normalise_branch_weights(raw["branch_weights"], model)
         d = W.derive(bw, model, alpha=float(weighting.get("alpha", W.DEFAULT_ALPHA)), edge_counts=W.kg_edge_counts(args.kg_dir),
-                     scope_rule=str(weighting.get("scope_rule", "max")), observed_counts=W.kg_observed_counts(args.kg_dir))
+                     scope_rule=str(weighting.get("scope_rule", "max")))
         print(W.review_markdown(raw.get("name", path.stem), d, bw, float(weighting.get("alpha", W.DEFAULT_ALPHA)), W.directionality_of(raw)))
         return 0
 

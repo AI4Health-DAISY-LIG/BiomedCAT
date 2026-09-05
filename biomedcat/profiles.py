@@ -105,13 +105,11 @@ def _strata_path(profile_path: Path) -> Path:
     return Path(settings.internal_data_path) / "biolink_strata.json"
 
 
-def load_profile(path: str | Path, derive: bool = True, presence: str = "filtered") -> Profile:
+def load_profile(path: str | Path, derive: bool = True) -> Profile:
     """Read a profile file; derive its weights from `branch_weights` when it has no `predicates` block.
 
     A flat {predicate: weight} JSON is accepted as legacy format. `derive=False` skips the
     derivation (the profile then has no predicate weights), for listings that only need names.
-    `presence="observed"` derives against every predicate of the raw KG2c instead of the current
-    Parquet build (used when building that Parquet, see biomedcat.weights.derive_for_profile).
     """
     from biomedcat import weights as weights_mod
 
@@ -141,11 +139,11 @@ def load_profile(path: str | Path, derive: bool = True, presence: str = "filtere
 
         strata_path = _strata_path(path)
         if strata_path.is_file():
-            derived = weights_mod.derive_for_profile(raw, path, strata_path, settings.kg2c_dir, presence=presence)
+            derived = weights_mod.derive_for_profile(raw, path, strata_path, settings.kg2c_dir)
             profile.branch_weights = dict(derived.get("branch_weights", {}))
             profile.category_weights = dict(derived.get("category_weights", {}))
             profile.symmetric_predicates = list(derived.get("symmetric_predicates", []))
-            profile.derived_path = str(weights_mod.derived_paths(path, presence)[0])
+            profile.derived_path = str(weights_mod.derived_paths(path)[0])
             if not profile.predicates:
                 profile.predicates = {k: float(v) for k, v in derived.get("predicates", {}).items()}
             # A console profile has no stratum: its reading scope is the list of weighted branches.
