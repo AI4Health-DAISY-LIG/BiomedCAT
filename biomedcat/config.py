@@ -23,6 +23,11 @@ class Settings:
         # Hidden "thinking" of reasoning models (gemma4): off, otherwise the token budget of short
         # answers is consumed by reasoning and the visible reply comes back empty.
         self.ollama_think = os.getenv("OLLAMA_THINK", "0") in ("1", "true", "yes")
+        # Sampling seed sent to Ollama with every call. Temperature 0 alone is not enough:
+        # Ollama re-samples on ties and its kernels are not bit-reproducible, so two runs of
+        # the same document could differ. A fixed seed makes a run reproducible; set
+        # OLLAMA_SEED to an empty string to let the server choose (non-reproducible).
+        self.ollama_seed = os.getenv("OLLAMA_SEED", "0")
         
         # Model used for inference
         # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"
@@ -87,8 +92,10 @@ class Settings:
         # equivalents.parquet maps any known CURIE to the canonical KG2c id, used as an offline
         # canonicalization step after name resolution and by the context-graph stage.
         self.kg2c_dir = os.getenv("KG2C_DIR", str(Path.joinpath(ROOT_PATH, "data/kg2c")))
+        # Default user preference profile (entity-branch format, biomedcat.profiles); the console
+        # overrides it per job with the merged reading profile.
         self.predicate_profile = os.getenv(
-            "PREDICATE_PROFILE", str(Path.joinpath(ROOT_PATH, "data/profiles/biochemical_actions_probs.json"))
+            "PREDICATE_PROFILE", str(Path.joinpath(ROOT_PATH, "data/profiles/biochemical_actions.json"))
         )
 
 settings = Settings()
