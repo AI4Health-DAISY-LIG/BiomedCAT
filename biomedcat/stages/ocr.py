@@ -103,7 +103,9 @@ def _call_ollama_ocr(image: Image.Image, model_id: str) -> str:
         image_base64_string = base64.b64encode(image_bytes).decode('utf-8')
         image_base64_string = image_base64_string.replace("\n", "").replace("\r", "").strip()
         messages = [{"role": "user", "content": ocr_description(*_reading_scope()), "images": [image_base64_string]}]
-        result = chat(model_id, messages, 8192, temperature=0.2)
+        # Temperature 0: the reading stage drove the whole run-to-run variance (a different
+        # transcription yields different mentions); recall comes from the prompt, not from sampling.
+        result = chat(model_id, messages, 8192, temperature=0.0)
 
         return result
     except Exception as e:
