@@ -205,6 +205,10 @@ def main() -> int:
             "domain": domain,
             "range": rng,
             "strata": in_strata,
+            # Symmetric predicates are not penalised in the reverse direction by the
+            # directionality parameter of the profiles (biomedcat.weights).
+            "symmetric": bool((d or {}).get("symmetric")),
+            "inverse": (d or {}).get("inverse"),
             "description": ((d or {}).get("description") or "")[:200],
         }
 
@@ -219,7 +223,7 @@ def main() -> int:
             name = pred_curie.replace("biolink:", "").replace("_", " ")
             predicates_out[name] = {
                 "curie": pred_curie, "is_a": None, "depth": None, "domain": None, "range": None,
-                "strata": list(strata_cfg), "kg2c_only": True, "n_edges_kg2c": n_edges,
+                "strata": list(strata_cfg), "symmetric": False, "inverse": None, "kg2c_only": True, "n_edges_kg2c": n_edges,
                 "description": f"Present in {observed.get('kg_version', 'KG2c')} but not in Biolink {model.get('version')}.",
             }
             kg2c_only.append(pred_curie)
@@ -258,9 +262,17 @@ def main() -> int:
     }
     Path(args.out).write_text(json.dumps(out, indent=2), encoding="utf-8")
 
+    # The baseline keeps an explicit `predicates` block (every predicate at 1): the profile loader
+    # only derives weights from `branch_weights` when that block is absent. Every entity branch
+    # is in scope and the traversal is undirected, i.e. no preference at all.
+    top_level = sorted(children.get("named thing", []))
+    uniform_branches = {c: 1.0 for c in top_level if c != "biological entity"}
+    uniform_branches.update({c: 1.0 for c in sorted(children.get("biological entity", []))})
     uniform = {
         "name": "uniform (no profile)",
-        "description": "Baseline: every Biolink predicate at weight 1, no source or knowledge-level weighting.",
+        "description": "Baseline: every Biolink predicate at weight 1, every entity branch in scope, undirected traversal, no source or knowledge-level weighting.",
+        "branch_weights": uniform_branches,
+        "directionality": {"mode": "off", "inverse_factor": 1.0},
         "predicates": {**{v["curie"]: 1.0 for v in predicates_out.values()}, **{p: 1.0 for p in KG2C_EXTRA_PREDICATES}},
         "sources": {},
         "knowledge_levels": {},
