@@ -1,3 +1,4 @@
+import os
 import re
 import json
 import logging
@@ -215,16 +216,18 @@ class NERAgentPipeline:
         logger.info(f"[Agent Tool] Semantic search: {query}")
         # The query is the agent's description of the term; appending the whole sentence diluted
         # the embedding and returned unrelated classes.
-        results = self.rag_engine.search(query, top_k=10)
+        # Candidate list size shown to the agent (AGENT_SEARCH_TOP_K, default 10).
+        top_k = int(os.getenv("AGENT_SEARCH_TOP_K", "10"))
+        results = self.rag_engine.search(query, top_k=top_k)
         # The raw term is searched too: since the exemplar index holds mentions, the surface
         # form often retrieves the class directly; both rankings are fused by reciprocal rank.
         term = getattr(self, "current_term", None)
         if term and term.strip().lower() != query.strip().lower():
             fused: Dict[str, float] = {}
-            for ranking in (results, self.rag_engine.search(term, top_k=10)):
+            for ranking in (results, self.rag_engine.search(term, top_k=top_k)):
                 for rank, c in enumerate(ranking):
                     fused[c] = fused.get(c, 0.0) + 1.0 / (60 + rank)
-            results = [c for c, _ in sorted(fused.items(), key=lambda kv: -kv[1])][:10]
+            results = [c for c, _ in sorted(fused.items(), key=lambda kv: -kv[1])][:top_k]
         if not results:
             return "No relevant biomedical classes found."
 
@@ -403,7 +406,40 @@ class NERAgentPipeline:
             When you know the type, end your response with exactly this line, using the class name
             exactly as returned by the tools (lowercase, with spaces):
             FINAL_VERDICT: <class name>"""
+            + self._tree_skeleton_block()
         )
+
+    def _tree_skeleton_block(self) -> str:
+        """The whole Biolink class tree, names only, indented, mixins in brackets (~600 tokens).
+
+        Enabled with AGENT_TREE_SKELETON=1: the agent then sees every parent, sibling and child
+        without a navigation call, so its steps go to searching and deciding. Abstract and
+        deprecated classes are shown with a marker, since they cannot be a verdict.
+        """
+        if os.getenv("AGENT_TREE_SKELETON", "0") not in ("1", "true", "yes"):
+            return ""
+        if getattr(self, "_skeleton_cache", None) is None:
+            flat = self.rag_engine.flat_data
+            roots = [c for c, v in flat.items() if not v["metadata"].get("parent") or v["metadata"]["parent"] not in flat]
+            lines: List[str] = []
+
+            def walk(name: str, depth: int) -> None:
+                meta = flat[name]["metadata"]
+                mark = "" if name in self._type_by_norm.values() else " (not assignable)"
+                mixins = meta.get("mixins")
+                if mixins:
+                    mixins = mixins if isinstance(mixins, str) else ", ".join(mixins)
+                    mark += f" [{mixins}]"
+                lines.append("  " * depth + name + mark)
+                for child in sorted(meta.get("children") or []):
+                    if child in flat:
+                        walk(child, depth + 1)
+
+            for r in sorted(roots):
+                walk(r, 0)
+            self._skeleton_cache = ("\n\nCLASS TREE (every Biolink class, indented by parent; mixins in brackets; "
+                                    "definitions come from the tools):\n" + "\n".join(lines))
+        return self._skeleton_cache
 
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
         """The ReAct loop: Thought -> Action -> Observation."""
