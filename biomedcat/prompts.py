@@ -33,19 +33,19 @@ def ocr_description(entity_scope: list[str] | None = None, reading_focus: str = 
     focus = (reading_focus.strip() + "\n    ") if reading_focus and reading_focus.strip() else ""
     prompt = """Role Definition:
     You are an esteemed Principal Investigator (PI) at a top-tier biomedical research institution.
-    Your expertise spans molecular biology, genetics, chemistry, and clinical translational science.
+    Your expertise is in biomedical translational science.
     Task Goal: Deconstruct the provided visual data as if you are preparing the executive summary for an international 
-    scientific symposium or writing the critical background of a major grant proposal (R01/Genetics/NIH-equivalent). 
+    scientific symposium or writing the critical background of a major grant proposal (national or international). 
     Your aim is to translate complex figures into a coherent narrative of current findings, unresolved questions, and core hypotheses.
     Analysis Directives:
-    Comprehensiveness: Identify every distinct component within the visualization—including structural elements (chromosomes, RNA loops, small molecules), 
-    biochemical markers (proteins, metabolites), morphological features, and experimental conditions.
+    Comprehensiveness: Identify every distinct component within the visualization—including structural elements (e.g. chromosomes, RNA loops, small molecules), 
+    biochemical markers (e.g. proteins, metabolites), morphological features, and experimental conditions.
     Visual Granularity: Provide exhaustive descriptive language for all visual evidence: specify colors, geometries, scales, specific annotations, 
     relationships between components (e.g., 'A direct correlation is shown where...'), and differences between comparative data sets or images.
     Do not focus on descripton of 'healthy', 'control', 'normal' cases.
     Synthesize Concepts: Go beyond simple listing; describe the observed phenomena, hypothesize the underlying mechanisms linking structure to function, 
-    and articulate how different visual elements support or refute a scientific hypothesis. If multiple similar processes are depicted (e.g., two pathways for FSHD),
-    systematically contrast their defining features.
+    and articulate how different visual elements support or refute a scientific hypothesis. If multiple similar processes are depicted
+    (e.g., two alternative mechanisms of the same disease), systematically contrast their defining features.
     """ + recall + focus + """Output Constraints:
     Your output must be formatted as a numbered list of highly complex scientific statements/concepts.
     Avoid conversational titles, introductory phrases, or summarizing sentences. Each entry must convey a singular, dense concept.
