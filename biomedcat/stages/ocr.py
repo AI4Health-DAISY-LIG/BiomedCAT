@@ -17,25 +17,11 @@ from biomedcat.types import Slide
 from biomedcat.runtime import chat
 from biomedcat.prompts import ocr_description
 
-GLM_PROMPT = (
-    # " as well as your current vision and hypothesis. "
-    # "Your presentation can contain"
-    # "including cell microscopy, molecular structures, genetic diagrams, and biological pathways."
-    # "Your task is to provide a detailed, descriptive caption for the provided image."
-    "You are an expert biomedical scientist giving a presentation of the state-of-the art in your field,"
-    "Your task is to provide a detailed, descriptive presentation conveying your vision and hypotheses."
-    "Focus on identifying key components, describing visual features (e.g., morphology, chemical bonds, flow direction),"
-    "noting any observed phenomena or relationships between elements, and comparing features if multiple similar images are presented."
-    "Be highly grounded in visual evidence but provide rich descriptive language."
-    "Your output should be only the most precise narrative of the scientist without titles, like a presentation in a scientific seminar"
-)
-
 GLM_BATCH_SIZE = 4  # Batch size for processing pages/images
-# OLLAMA_URL = "http://localhost:11434/api/chat"
 CACHE_OCR_FOLDER_PATH = Path.joinpath(Path(__file__).parent.parent.parent,'data/cache_ocr')
 Path(CACHE_OCR_FOLDER_PATH).mkdir(parents=True, exist_ok=True)
 
-def _to_pdf_or_image(file_path: str, tmp_dir: str) -> tuple[str, Image.Image | str]:
+def _to_pdf_or_image(file_path: str) -> tuple[str, Image.Image | str]:
     """Normalise the input to a single page source: ('image', PIL.Image) or ('pdf', path)."""
     ext = Path(file_path).suffix.lower()
 
@@ -128,15 +114,13 @@ def run_ocr(file_path: str, model_id) -> list[Slide]:
     """Transcribe a file to per-slide text using Ollama OCR."""
     texts = []
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        # CPU prep (including any PPTX -> PDF) happens before the model touches the GPU/API call.
-        kind, source = _to_pdf_or_image(file_path, tmp_dir)
+    kind, source = _to_pdf_or_image(file_path)
 
-        try:
-            for batch in _iter_batches(kind, source):
-                texts.extend(process_image_batch(model_id, batch))
-        finally:
-            pass
+    try:
+        for batch in _iter_batches(kind, source):
+            texts.extend(process_image_batch(model_id, batch))
+    finally:
+        pass
 
     slides = []
     for page, text in enumerate(texts, start=1):
