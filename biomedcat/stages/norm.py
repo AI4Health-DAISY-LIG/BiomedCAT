@@ -16,6 +16,8 @@ from biomedcat.runtime import generate
 from biomedcat.types import Entity, NormalizedEntity
 from biomedcat import prompts
 from biomedcat.retrieval import resolve_terms
+from pathlib import Path
+
 from biomedcat.config import settings
 
 logger = logging.getLogger(__name__)
@@ -51,16 +53,59 @@ def _parse_choice(reply: str) -> int | None:
     return int(ints[-1]) if ints else None
 
 
+def _kg2c_glosses(curies: list[str]) -> dict[str, str]:
+    """RTX-KG2c one-line gloss (description, else synonyms) for the candidates, when the optional
+    node_details table exists (scripts/build_kg2c_extras.py).
+
+    The table is read through DuckDB with a targeted join, never loaded into memory: one query per
+    entity over ~20 identifiers costs a few milliseconds and a few kilobytes, so the resident set
+    of the pipeline is unchanged. Silent no-op when the table is absent.
+    """
+    ids = [c for c in dict.fromkeys(curies) if c]
+    path = Path(settings.kg2c_dir) / "node_details.parquet"
+    if not ids or not path.is_file():
+        return {}
+    try:
+        import duckdb
+
+        con = duckdb.connect()
+        con.execute("CREATE TABLE want (id VARCHAR)")
+        con.executemany("INSERT INTO want VALUES (?)", [(i,) for i in ids])
+        sql_path = str(path).replace("\\", "/").replace("'", "''")
+        rows = con.execute(
+            f"SELECT d.id, d.description, d.synonyms FROM read_parquet('{sql_path}') d JOIN want USING (id)"
+        ).fetchall()
+        con.close()
+    except Exception as e:  # a missing or unreadable table must never stop the linking stage
+        logger.warning("KG2c glosses unavailable: %s", e)
+        return {}
+    out: dict[str, str] = {}
+    for cid, description, synonyms in rows:
+        text = (description or "").strip()
+        if text.startswith("//"):            # GO curation comments are not descriptions
+            text = ""
+        if not text and synonyms:
+            text = "also known as " + "; ".join(list(synonyms)[:4])
+        if text:
+            out[cid] = " ".join(text.split())[:180]
+    return out
+
+
 def _build_menu(ranked: list) -> str:
     """Number the candidates for the judge; option 0 is always 'none'.
 
-    Each line shows the candidate's type in [brackets] so the judge can enforce type
-    consistency, and flags whether the candidate exists in the knowledge graph.
+    Each line shows the candidate's type in [brackets], whether the candidate exists in the
+    knowledge graph, and its RTX-KG2c description when available: without it the judge only sees
+    labels and cannot separate homonyms such as "Chromosomes, Human, Pair 4" from "Chromosome 4
+    Short Arm".
     """
+    glosses = _kg2c_glosses([c.kg2c_id or c.curie for c in ranked])
     lines = ["0. none of the candidates"]
     for i, cand in enumerate(ranked, start=1):
         in_kg = "in KG2" if cand.kg2c_id else "not in KG2"
-        lines.append(f"{i}. {cand.label}  [{cand.biolink_type or '?'}]  ({cand.curie}, {in_kg})")
+        gloss = glosses.get(cand.kg2c_id or "") or glosses.get(cand.curie, "")
+        lines.append(f"{i}. {cand.label}  [{cand.biolink_type or '?'}]  ({cand.curie}, {in_kg})"
+                     + (f"\n   {gloss}" if gloss else ""))
     return "\n".join(lines)
 
 
