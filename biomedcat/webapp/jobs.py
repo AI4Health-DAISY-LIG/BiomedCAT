@@ -28,9 +28,11 @@ logger = logging.getLogger(__name__)
 STATUSES = ("queued", "running", "review", "done", "failed", "cancelled")
 ACTIVE = ("queued", "running", "review")
 PROFILES_DIR = Path(ROOT_PATH) / "data" / "profiles"
-# Profiles offered in the console: every JSON of data/profiles with a `predicates` block and a
-# name, except the legacy flat files and the strata configuration.
+# Profiles offered in the console: every JSON of data/profiles with a `branch_weights` or a
+# `predicates` block, except the strata configuration (legacy hand-written files live in
+# data/profiles/legacy and are not listed).
 EXCLUDED_PROFILE_FILES = {"strata_config.json", "biochemical_actions_probs.json"}
+CUSTOM_PREFIX = "custom-"
 
 # Default cost model until the console has seen jobs of its own (seconds).
 DEFAULT_SEC_PER_PAGE = 720.0      # OCR (~2 min) + NER agent + linking, per slide, on a 16 GB laptop
@@ -59,7 +61,7 @@ def atomic_write_json(path: Path, payload: dict) -> None:
 # ------------------------------------------------------------------------------------------
 
 def list_profiles(profiles_dir: Path = PROFILES_DIR) -> list[dict]:
-    """Profiles selectable in the console, with the reading scope derived from their stratum."""
+    """Profiles selectable in the console, with their branch priorities and reading scope."""
     from biomedcat.profiles import load_profile
 
     out = []
@@ -70,25 +72,95 @@ def list_profiles(profiles_dir: Path = PROFILES_DIR) -> list[dict]:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if "predicates" not in raw:
+        if "predicates" not in raw and "branch_weights" not in raw:
             continue
         try:
             profile = load_profile(path)
-            scope = profile.entity_scope
+            scope, n_pred = profile.entity_scope, len(profile.predicates)
+            branch_weights, directionality = profile.branch_weights, profile.directionality
         except Exception:  # a malformed profile must not hide the others
-            scope = list(raw.get("entity_scope", []))
+            scope, n_pred = list(raw.get("entity_scope", [])), len(raw.get("predicates", {}))
+            branch_weights, directionality = dict(raw.get("branch_weights", {})), raw.get("directionality", {})
         out.append({
             "id": path.stem,
             "name": raw.get("name", path.stem),
             "description": raw.get("description", ""),
             "stratum": raw.get("stratum", ""),
-            "n_predicates": len(raw.get("predicates", {})),
+            "n_predicates": n_pred,
             "entity_scope": scope,
+            "branch_weights": branch_weights,
+            "directionality": directionality,
+            "custom": False,
         })
     return out
 
 
-def merge_profiles(profile_ids: list[str], out_path: Path, profiles_dir: Path = PROFILES_DIR) -> Path:
+def entity_branches() -> dict:
+    """Entity branches of the Biolink model for the custom-profile builder, with KG2c node counts."""
+    from biomedcat.weights import BiolinkModel, camel_curie
+
+    strata = Path(settings.internal_data_path) / "biolink_strata.json"
+    model = BiolinkModel.load(strata)
+    counts: dict[str, int] = {}
+    stats = Path(settings.kg2c_dir) / "stats.json"
+    if stats.is_file():
+        try:
+            counts = json.loads(stats.read_text(encoding="utf-8")).get("nodes", {}).get("nodes_kept_by_category", {}) or {}
+        except ValueError:
+            counts = {}
+    branches = []
+    for b in model.branch_info():
+        names = [b["name"]] + sorted(model.descendants.get(b["name"], ()))
+        n_nodes = sum(int(counts.get(camel_curie(n), 0)) for n in names)
+        branches.append({**b, "n_nodes_kg2c": n_nodes})
+    return {"biolink_version": model.version, "branches": branches, "levels": [0, 0.5, 1]}
+
+
+def custom_profile_id(name: str, taken: set[str]) -> str:
+    base = CUSTOM_PREFIX + slugify(name or "profile", 24)
+    pid, n = base, 1
+    while pid in taken:
+        n += 1
+        pid = f"{base}-{n}"
+    return pid
+
+
+def normalise_custom_profile(spec: dict) -> dict:
+    """Validate a custom profile from the console into a profile file (biomedcat.profiles format)."""
+    from biomedcat.weights import BiolinkModel, directionality_of, normalise_branch_weights
+
+    name = str(spec.get("name") or "custom profile").strip()[:80]
+    model = BiolinkModel.load(Path(settings.internal_data_path) / "biolink_strata.json")
+    weights = {b: w for b, w in normalise_branch_weights(spec.get("branch_weights") or {}, model).items() if w > 0}
+    if not weights:
+        raise ValueError(f"custom profile {name!r}: no known entity branch with a non-zero priority")
+    profile = {
+        "name": name,
+        "description": str(spec.get("description") or "User-defined profile built in the console: entity-branch priorities "
+                                                       "and directionality set by the user, weights derived automatically."),
+        "branch_weights": weights,
+        "directionality": directionality_of(spec),
+        "weighting": {"alpha": float((spec.get("weighting") or {}).get("alpha", 0.7)),
+                      "scope_rule": str((spec.get("weighting") or {}).get("scope_rule", "max"))},
+        "sources": dict(spec.get("sources") or {}),
+        "knowledge_levels": dict(spec.get("knowledge_levels") or {}),
+        "prefix_restricted_predicates": dict(spec.get("prefix_restricted_predicates") or {}),
+        "custom": True,
+    }
+    return profile
+
+
+def profile_path(profile_id: str, job_dir: Path | None = None, profiles_dir: Path = PROFILES_DIR) -> Path:
+    """Profile file of a job profile: a custom profile lives in <job>/profiles/, a default one in data/profiles."""
+    if job_dir is not None:
+        candidate = Path(job_dir) / "profiles" / f"{profile_id}.json"
+        if candidate.is_file():
+            return candidate
+    return profiles_dir / f"{profile_id}.json"
+
+
+def merge_profiles(profile_ids: list[str], out_path: Path, profiles_dir: Path = PROFILES_DIR,
+                   job_dir: Path | None = None) -> Path:
     """Write the reading profile of a job: the union of the selected profiles.
 
     OCR and NER run once per document, so the slide-reading prompt must ask for every entity
@@ -103,7 +175,7 @@ def merge_profiles(profile_ids: list[str], out_path: Path, profiles_dir: Path = 
                               "reading_focus": "", "members": profile_ids}
     focus_parts: list[str] = []
     for pid in profile_ids:
-        p = load_profile(profiles_dir / f"{pid}.json")
+        p = load_profile(profile_path(pid, job_dir, profiles_dir))
         for block, values in (("predicates", p.predicates), ("sources", p.sources), ("knowledge_levels", p.knowledge_levels)):
             for k, v in values.items():
                 merged[block][k] = max(float(v), merged[block].get(k, 0.0))
@@ -133,6 +205,7 @@ class Job:
     documents: list[dict]                  # {file, stem, pages, bytes}
     profiles: list[str]
     options: dict = field(default_factory=dict)   # review, offline, gate
+    custom_profiles: dict = field(default_factory=dict)   # custom profile id -> its profile file content
     status: str = "queued"
     estimate_s: float = 0.0
     started_at: Optional[str] = None
@@ -193,14 +266,26 @@ class JobStore:
             job_id = f"{base}-{n}"
         return job_id
 
-    def create(self, name: str, documents: list[dict], profiles: list[str], options: dict | None = None) -> Job:
+    def create(self, name: str, documents: list[dict], profiles: list[str], options: dict | None = None,
+               custom_profiles: list[dict] | None = None) -> Job:
+        """Create a queued job. `custom_profiles` are console-built profiles (see normalise_custom_profile):
+        each is written to <job>/profiles/<id>.json, its derived weights land next to it for the trace."""
         with self._lock:
             job_id = self.new_id(name)
             job_dir = self.job_dir(job_id)
             job_dir.mkdir(parents=True)
-            merge_profiles(profiles, job_dir / "profile_merged.json")
-            job = Job(id=job_id, name=name, created_at=now_iso(), documents=documents, profiles=list(profiles),
-                      options=dict(options or {}))
+            profiles = list(profiles)
+            customs: dict[str, dict] = {}
+            for spec in custom_profiles or []:
+                profile = normalise_custom_profile(spec)
+                pid = custom_profile_id(profile["name"], set(profiles) | set(customs))
+                (job_dir / "profiles").mkdir(exist_ok=True)
+                atomic_write_json(job_dir / "profiles" / f"{pid}.json", profile)
+                customs[pid] = profile
+                profiles.append(pid)
+            merge_profiles(profiles, job_dir / "profile_merged.json", job_dir=job_dir)
+            job = Job(id=job_id, name=name, created_at=now_iso(), documents=documents, profiles=profiles,
+                      options=dict(options or {}), custom_profiles=customs)
             job.estimate_s = round(estimate_seconds(job.pages, len(profiles), self.sec_per_page()), 0)
             job.progress = {"stage": "queued", "document": "", "detail": "", "done_units": 0,
                             "total_units": len(documents) * (3 + len(profiles)), "history": []}

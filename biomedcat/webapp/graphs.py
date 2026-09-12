@@ -205,25 +205,43 @@ def _read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def _profile_scope(profile_id: str) -> set[str]:
-    from biomedcat.profiles import load_profile
-    from biomedcat.webapp.jobs import PROFILES_DIR
+def _job_dir_of(graph_dir: Path | None) -> Path | None:
+    """<job>/graphs/<stem>/<profile> -> <job>, so custom profiles of the job can be found."""
+    if graph_dir is None:
+        return None
+    graph_dir = Path(graph_dir)
+    return graph_dir.parents[2] if len(graph_dir.parents) >= 3 and graph_dir.parents[1].name == "graphs" else None
 
+
+def _load_job_profile(profile_id: str, graph_dir: Path | None = None):
+    from biomedcat.profiles import load_profile
+    from biomedcat.webapp.jobs import profile_path
+
+    return load_profile(profile_path(profile_id, _job_dir_of(graph_dir)))
+
+
+def _profile_scope(profile_id: str, graph_dir: Path | None = None) -> set[str]:
     try:
-        return set(load_profile(PROFILES_DIR / f"{profile_id}.json").entity_scope)
+        return set(_load_job_profile(profile_id, graph_dir).entity_scope)
     except (OSError, ValueError):
         return set()
 
 
-def _profile_strata(profile_id: str) -> tuple[set[str], set[str]]:
-    """(core classes, shared classes) of the profile's stratum, from data/biolink_strata.json."""
-    from biomedcat.profiles import load_profile
-    from biomedcat.webapp.jobs import PROFILES_DIR
-
+def _profile_strata(profile_id: str, graph_dir: Path | None = None) -> tuple[set[str], set[str]]:
+    """(core classes, shared classes) of the profile: its stratum from data/biolink_strata.json, or,
+    for a custom profile without stratum, the classes of its primary (1) and secondary (0.5) branches."""
     try:
-        stratum = load_profile(PROFILES_DIR / f"{profile_id}.json").stratum
+        profile = _load_job_profile(profile_id, graph_dir)
+        if not profile.stratum and profile.branch_weights:
+            from biomedcat.weights import BiolinkModel
+
+            model = BiolinkModel.load(Path(settings.internal_data_path) / "biolink_strata.json")
+            core, shared = set(), set()
+            for b, w in profile.branch_weights.items():
+                (core if w >= 1.0 else shared).update([b] + sorted(model.descendants.get(b, ())))
+            return core, shared
         strata = json.loads((Path(settings.internal_data_path) / "biolink_strata.json").read_text(encoding="utf-8")).get("strata", {})
-        d = strata.get(stratum, {})
+        d = strata.get(profile.stratum, {})
         return set(d.get("core_classes", [])), set(d.get("shared_classes", []))
     except (OSError, ValueError, KeyError):
         return set(), set()
@@ -250,9 +268,9 @@ def build_graph_json(graph_dir: str | Path, profile_id: str, use_kg: bool = True
             summary = json.loads((graph_dir / "summary.json").read_text(encoding="utf-8"))
         except ValueError:
             summary = {}
-    scope = _profile_scope(profile_id)
+    scope = _profile_scope(profile_id, graph_dir)
     scope_norm = {re.sub(r"[\s_\-]", "", s).lower() for s in scope}
-    core, shared = _profile_strata(profile_id)
+    core, shared = _profile_strata(profile_id, graph_dir)
     scope_groups: dict[str, int] = {}
 
     # Seeds are exported with category "seed": their Biolink category comes from the KG table.
@@ -436,6 +454,7 @@ def trace_readme(job: dict) -> str:
               "- job.json: job state, parameters, timings.",
               "- job.log: full trace (OCR, every agent step, linking judgements, context-graph statistics).",
               "- profile_merged.json: reading profile (union of the selected profiles) used for OCR and NER.",
+              "- profiles/<profile>.json: the profiles of the job (entity-branch priorities, directionality); profiles/derived/<profile>.derived.json and .review.md: the class scope and predicate weights derived from them, with the per-predicate review table.",
               "- documents/<stem>/<stem>_stage1.json: slide texts and typed entities before any linking.",
               "- documents/<stem>/<stem>_review.csv: the entity review sheet (review option only).",
               "- documents/<stem>/<stem>_BiomedCAT.json: linked entities with CURIE and RTX-KG2c id, run metadata.",

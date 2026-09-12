@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from biomedcat.config import settings, ROOT_PATH
-from biomedcat.webapp.jobs import JobStore, Worker, list_profiles, estimate_seconds, now_iso, ACTIVE
+from biomedcat.webapp.jobs import JobStore, Worker, list_profiles, entity_branches, estimate_seconds, now_iso, ACTIVE
 from biomedcat.webapp import graphs as graphs_mod
 from biomedcat.webapp import enrichment
 from biomedcat.webapp import summary as summary_mod
@@ -107,6 +107,15 @@ def profiles() -> list[dict]:
     return list_profiles()
 
 
+@app.get("/api/branches")
+def branches() -> dict:
+    """Entity branches of the Biolink model, for the custom-profile builder."""
+    try:
+        return entity_branches()
+    except (OSError, ValueError, KeyError) as e:
+        raise HTTPException(503, f"Biolink strata not built (scripts/build_biolink_strata.py): {e}")
+
+
 class EstimateRequest(BaseModel):
     pages: int
     n_profiles: int
@@ -166,17 +175,20 @@ def list_jobs() -> list[dict]:
 
 @app.post("/api/jobs", status_code=201)
 async def create_job(files: list[UploadFile] = File(...), paths: str = Form("[]"), name: str = Form(""),
-                     profiles: str = Form("[]"), options: str = Form("{}")) -> dict:
+                     profiles: str = Form("[]"), options: str = Form("{}"), custom_profiles: str = Form("[]")) -> dict:
     try:
         rel_paths = json.loads(paths or "[]")
         profile_ids = json.loads(profiles or "[]")
         opts = json.loads(options or "{}")
+        customs = json.loads(custom_profiles or "[]")
     except ValueError as e:
         raise HTTPException(400, f"bad form field: {e}")
     known = {p["id"] for p in list_profiles()}
     profile_ids = [p for p in profile_ids if p in known]
-    if not profile_ids:
-        raise HTTPException(400, "select at least one profile")
+    if not isinstance(customs, list) or not all(isinstance(c, dict) for c in customs):
+        raise HTTPException(400, "custom_profiles must be a list of objects")
+    if not profile_ids and not customs:
+        raise HTTPException(400, "select at least one profile or build a custom one")
     incoming = store.dataset_root / f"_incoming_{int(time.time() * 1000)}"
     incoming.mkdir(parents=True, exist_ok=True)
     documents = []
@@ -201,8 +213,12 @@ async def create_job(files: list[UploadFile] = File(...), paths: str = Form("[]"
         if n:
             d["stem"] = f"{d['stem']}_{n + 1}"
     job_name = name.strip() or (Path(rel_paths[0]).parts[0] if rel_paths and rel_paths[0] and "/" in rel_paths[0] else documents[0]["stem"])
-    job = store.create(job_name, documents, profile_ids, {"review": bool(opts.get("review")), "offline": bool(opts.get("offline")),
-                                                          "gate": opts.get("gate") or settings.existence_gate})
+    try:
+        job = store.create(job_name, documents, profile_ids, {"review": bool(opts.get("review")), "offline": bool(opts.get("offline")),
+                                                              "gate": opts.get("gate") or settings.existence_gate}, custom_profiles=customs)
+    except ValueError as e:
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise HTTPException(400, str(e))
     final_dir = store.dataset_root / job.id
     os.replace(incoming, final_dir)
     for d in job.documents:
