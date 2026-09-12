@@ -17,8 +17,13 @@ class Settings:
         # INPUTS. PPTX is not accepted: export slides to PDF first (LibreOffice is no longer a dependency).
         self.supported_docs = {".pdf", ".png", ".jpg", ".jpeg"}
 
-        # Ollama keep_alive sent with every request. 0 unloads the model right after the call, so
-        # the OCR, NER and judge models never coexist in RAM (16 GB budget); -1 keeps it loaded.
+        # Ollama keep_alive sent with every request. Default 0: the model is unloaded after every
+        # call. Measured on 11 Sept 2026: a resident model ("10m") saves only ~15 % of the agent's
+        # time (generation dominates, not loading) but breaks reproducibility -- two back-to-back
+        # runs of the same 50 terms agreed on 82 % of verdicts with a resident model against 100 %
+        # with unload-per-call (prompt/KV cache reuse changes the arithmetic of greedy decoding).
+        # Set "10m" for interactive use where speed matters more than bit-identical runs; the
+        # stage-boundary unload_models() calls keep the 16 GB budget in both modes.
         self.ollama_keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "0")
         # Hidden "thinking" of reasoning models (gemma4): off, otherwise the token budget of short
         # answers is consumed by reasoning and the visible reply comes back empty.
@@ -28,6 +33,13 @@ class Settings:
         # the same document could differ. A fixed seed makes a run reproducible; set
         # OLLAMA_SEED to an empty string to let the server choose (non-reproducible).
         self.ollama_seed = os.getenv("OLLAMA_SEED", "0")
+        # Sampling overrides for experiments (empty = use the temperature each call passes, greedy
+        # by default, and Ollama's own top-k / top-p). Gemma's recommended sampling is
+        # OLLAMA_TEMPERATURE=1.0 OLLAMA_TOP_K=64 OLLAMA_TOP_P=0.95; with a fixed seed the run stays
+        # reproducible, so temperature governs exploration and the seed governs reproducibility.
+        self.ollama_temperature = os.getenv("OLLAMA_TEMPERATURE", "")
+        self.ollama_top_k = os.getenv("OLLAMA_TOP_K", "")
+        self.ollama_top_p = os.getenv("OLLAMA_TOP_P", "")
         
         # Model used for inference
         # self.model_name = os.getenv("OLLAMA_MODEL", "zai-org/GLM-OCR") # "gemma4:e4b-it-qat"

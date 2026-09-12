@@ -31,6 +31,7 @@ from biomedcat.config import settings, Settings
 from biomedcat.stages.ocr import run_ocr
 from biomedcat.stages.ner_agent import run_ner_agent
 from biomedcat.stages.norm import run_norm
+from biomedcat.runtime import unload_models, stage_models
 from biomedcat.retrieval import is_shareable
 from biomedcat.types import PipelineResult, Slide, Entity
 from biomedcat.events import event_emitter
@@ -68,12 +69,14 @@ def run_stage1(path: str, settings: Settings = settings, model_id: str | None = 
     event_emitter.on_stage_change(path, "OCR", "running")
     t0 = time.perf_counter()
     slides = run_ocr(path, settings.ocr_model_id)
+    unload_models(settings.ocr_model_id)   # the reading model gives its memory back before typing starts
     event_emitter.on_stage_change(path, "OCR", "done")
     logger.info("OCR done: %d slide(s) in %.1fs", len(slides), time.perf_counter() - t0)
 
     event_emitter.on_stage_change(path, "NER", "running")
     t0 = time.perf_counter()
     entities = run_ner_agent([slide.text for slide in slides], ner_model)
+    unload_models(*stage_models())         # typing, screening and existence models released
     event_emitter.on_stage_change(path, "NER", "done")
     logger.info("NER done: %d entit(y/ies) in %.1f s", len(entities), time.perf_counter() - t0)
 
@@ -104,6 +107,7 @@ def run_stage2(stage1: Stage1Result, path: str, settings: Settings = settings,
     finally:
         if local_only_terms:
             retrieval.is_shareable = original
+    unload_models(*stage_models())         # the judge model is released before the graph stage
     event_emitter.on_stage_change(path, "Norm", "done")
     linked = sum(1 for r in results if r.curie)
     logger.info("Norm done: %d/%d linked in %.1fs", linked, len(results), time.perf_counter() - t0)
