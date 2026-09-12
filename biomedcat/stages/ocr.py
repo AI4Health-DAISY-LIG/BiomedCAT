@@ -3,9 +3,6 @@
 Pages are rasterized and sent to the external OCR service one batch at a time, so only a single batch of images is
 ever held in memory -- large decks never load fully into RAM.
 """
-import tempfile
-import gc
-import requests
 from pathlib import Path
 from PIL import Image
 import os
@@ -130,7 +127,7 @@ def run_ocr(file_path: str, model_id) -> list[Slide]:
 
 if __name__ == "__main__":
 
-    TEST_FILE = "Dataset/chemicals.pdf"
+    TEST_FILE = "Dataset/example/Biology-12-01380-g003.png"
 
     try:
         print(f"Starting OCR test on {TEST_FILE}...")
@@ -139,7 +136,7 @@ if __name__ == "__main__":
         for slide in slides:
             print("-" * 20)
             print(f"Page {slide.page}:")
-            print(slide.text[:150] + "..." if len(slide.text) > 150 else slide.text)
+            print(slide.text)
 
     except FileNotFoundError:
         print(f"\nERROR: Test file not found at '{TEST_FILE}'. Please update TEST_FILE to a valid path.")
