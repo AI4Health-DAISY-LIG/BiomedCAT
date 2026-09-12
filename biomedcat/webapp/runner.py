@@ -10,6 +10,8 @@ per profile with its Cytoscape export. Outputs land in the job directory:
     documents/<stem>/<stem>_review.csv       review sheet (review option only)
     documents/<stem>/<stem>_BiomedCAT.json   linked entities, run metadata (schema 1.1)
     graphs/<stem>/<profile>/                 nodes.csv, edges.csv, context_graph.graphml, summary.json, graph.json
+    profiles/<profile>.json                  console-built profiles; profiles/derived/: class scope and predicate
+                                             weights derived from every profile of the job (trace)
 
 The worker (jobs.Worker) captures stdout/stderr into job.log, so everything logged here is the
 trace shipped with the results. Settings come from the environment set by the worker
@@ -27,7 +29,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from biomedcat.config import settings, ROOT_PATH
-from biomedcat.webapp.jobs import JobStore, Job, now_iso, PROFILES_DIR
+from biomedcat.webapp.jobs import JobStore, Job, now_iso, PROFILES_DIR, profile_path
 
 logger = logging.getLogger("biomedcat.webapp.runner")
 
@@ -71,6 +73,22 @@ def _save_stage1(stage1, stage1_path: Path) -> None:
         "filename": stage1.filename, "ner_model": stage1.ner_model,
         "slides": [asdict(s) for s in stage1.ocr], "entities": [asdict(e) for e in stage1.ner],
     }, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _copy_derived_weights(ppath: Path, job_dir: Path) -> None:
+    """Ship the derived class scope and predicate weights of a default profile with the job outputs
+    (a custom profile is derived inside the job directory already)."""
+    import shutil
+    from biomedcat.weights import derived_paths
+
+    dest = job_dir / "profiles" / "derived"
+    for src in derived_paths(ppath):
+        if src.is_file() and src.parent != dest:
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest / src.name)
+            except OSError as e:
+                logger.warning("could not copy %s into the job: %s", src, e)
 
 
 def run_job(job_dir: Path, resume: bool = False) -> int:
@@ -170,7 +188,9 @@ def run_job(job_dir: Path, resume: bool = False) -> int:
                     store.update(job.id, outputs=outputs)
                     continue
                 try:
-                    cg = run_context_graph(seeds, out_dir, ContextGraphParams(profile=str(PROFILES_DIR / f"{profile_id}.json")))
+                    ppath = profile_path(profile_id, job_dir)
+                    cg = run_context_graph(seeds, out_dir, ContextGraphParams(profile=str(ppath)))
+                    _copy_derived_weights(ppath, job_dir)
                     summary = asdict(cg)
                     graph = build_graph_json(out_dir, profile_id)
                     (out_dir / "graph.json").write_text(json.dumps(graph, ensure_ascii=False), encoding="utf-8")

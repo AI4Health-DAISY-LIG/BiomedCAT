@@ -38,6 +38,30 @@
       <ul id="file-list"></ul>
       <label>Job name <input id="job-name" placeholder="defaults to the folder or first file name"></label>
       <fieldset id="profiles"><legend>Profiles (one context graph per selected profile)</legend><p class="muted small">loading…</p></fieldset>
+      <fieldset id="custom-profiles">
+        <legend>Custom profiles (your own priorities)</legend>
+        <div id="custom-list"><p class="muted small">None yet. A custom profile sets, for each family of Biolink entities, whether it is of primary interest (1), secondary interest (0.5) or out of scope (0); the class scope and the predicate weights are derived automatically and shipped with the results.</p></div>
+        <p><button type="button" id="custom-open">Build a custom profile</button></p>
+        <div id="custom-builder" class="builder" hidden>
+          <div class="builder-head">
+            <label>Name <input id="custom-name" placeholder="e.g. drug targets and pathways"></label>
+            <label>Start from
+              <select id="custom-base"><option value="">nothing (all branches out of scope)</option></select>
+            </label>
+            <label>Directionality
+              <select id="custom-dir">
+                <option value="on">on: follow edge direction, reverse direction penalised</option>
+                <option value="off">off: undirected traversal</option>
+              </select>
+            </label>
+            <label id="custom-inv-label">Reverse factor <input id="custom-inv" type="number" min="0" max="1" step="0.1" value="0.5"></label>
+          </div>
+          <p class="hint">Priority per entity branch: <strong>1</strong> primary, <strong>0.5</strong> secondary, <strong>0</strong> out of scope (nodes of that family are neither expanded nor kept). Predicates are weighted from the branches they connect; changes of representation (gene / transcript / protein / drug target) always count 1.</p>
+          <div id="custom-branches" class="branches"></div>
+          <p><button type="button" class="primary" id="custom-add">Add this profile to the job</button> <button type="button" id="custom-cancel">Cancel</button></p>
+          <div class="error" id="custom-error" hidden></div>
+        </div>
+      </fieldset>
       <fieldset>
         <legend>Options</legend>
         <label><input type="checkbox" id="opt-review"> Review the entity list before anything is sent to the resolvers (human in the loop; the job pauses after reading)</label>

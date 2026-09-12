@@ -2,7 +2,8 @@
 (function () {
   "use strict";
   const $ = (sel) => document.querySelector(sel);
-  const state = { files: [], profiles: [], jobs: [], selected: null, status: null, pagesCache: new Map() };
+  const state = { files: [], profiles: [], jobs: [], selected: null, status: null, pagesCache: new Map(),
+                  branches: null, customs: [], builder: null };
 
   // ---------------------------------------------------------------------------------------
   // helpers
@@ -63,8 +64,105 @@
       box.appendChild(div);
     }
     box.addEventListener("change", updateEstimate);
+    const base = $("#custom-base");
+    for (const p of state.profiles) {
+      if (!p.branch_weights || !Object.keys(p.branch_weights).length) continue;
+      const opt = document.createElement("option");
+      opt.value = p.id; opt.textContent = p.name;
+      base.appendChild(opt);
+    }
   }
   const selectedProfiles = () => [...document.querySelectorAll('input[name="profile"]:checked')].map((i) => i.value);
+  const nSelectedProfiles = () => selectedProfiles().length + state.customs.length;
+
+  // ---------------------------------------------------------------------------------------
+  // custom profile builder: one priority (0 / 0.5 / 1) per entity branch of the Biolink model
+  // ---------------------------------------------------------------------------------------
+  const LEVELS = [0, 0.5, 1];
+  async function loadBranches() {
+    if (state.branches) return state.branches;
+    state.branches = await api("/api/branches");
+    return state.branches;
+  }
+
+  function renderBranches() {
+    const box = $("#custom-branches");
+    box.innerHTML = "";
+    const groups = [["Biology (biological entity)", (b) => b.group === "biological entity"], ["Other entities", (b) => b.group !== "biological entity"]];
+    for (const [title, keep] of groups) {
+      const h = document.createElement("h4"); h.textContent = title; box.appendChild(h);
+      const items = state.branches.branches.filter(keep).sort((a, b) => b.n_nodes_kg2c - a.n_nodes_kg2c || a.name.localeCompare(b.name));
+      for (const b of items) {
+        const w = state.builder.weights[b.name] || 0;
+        const div = document.createElement("div");
+        div.className = "branch" + (b.n_nodes_kg2c ? "" : " empty");
+        div.title = (b.description || "") + (b.examples && b.examples.length ? "\nIncludes: " + b.examples.join(", ") : "");
+        div.innerHTML = `<span class="bname">${esc(b.name)}<span class="muted">${b.n_classes} class(es), ${b.n_nodes_kg2c.toLocaleString()} KG2c node(s)</span></span>
+          <span class="seg" data-branch="${esc(b.name)}">${LEVELS.map((l) => `<button type="button" data-level="${l}" class="${l === w ? "on" + (l === 0.5 ? " half" : "") : ""}">${l}</button>`).join("")}</span>`;
+        box.appendChild(div);
+      }
+    }
+    box.querySelectorAll(".seg button").forEach((btn) => btn.addEventListener("click", () => {
+      const branch = btn.parentElement.dataset.branch, level = parseFloat(btn.dataset.level);
+      if (level > 0) state.builder.weights[branch] = level; else delete state.builder.weights[branch];
+      btn.parentElement.querySelectorAll("button").forEach((b) => { b.className = parseFloat(b.dataset.level) === level ? "on" + (level === 0.5 ? " half" : "") : ""; });
+    }));
+  }
+
+  function applyBase() {
+    const id = $("#custom-base").value;
+    const p = state.profiles.find((x) => x.id === id);
+    state.builder.weights = p ? Object.assign({}, p.branch_weights) : {};
+    if (p && p.directionality) {
+      $("#custom-dir").value = p.directionality.mode || "on";
+      $("#custom-inv").value = p.directionality.inverse_factor != null ? p.directionality.inverse_factor : 0.5;
+    }
+    if (p && !$("#custom-name").value) $("#custom-name").value = p.name + " (custom)";
+    renderBranches();
+  }
+
+  async function openBuilder() {
+    const err = $("#custom-error"); err.hidden = true;
+    try { await loadBranches(); } catch (e) { err.hidden = false; err.textContent = "Cannot load the Biolink branches: " + e.message; return; }
+    state.builder = { weights: {} };
+    $("#custom-name").value = "";
+    $("#custom-base").value = "";
+    $("#custom-dir").value = "on"; $("#custom-inv").value = "0.5";
+    $("#custom-builder").hidden = false;
+    renderBranches();
+  }
+
+  function addCustom() {
+    const err = $("#custom-error"); err.hidden = true;
+    const weights = state.builder.weights;
+    if (!Object.keys(weights).length) { err.hidden = false; err.textContent = "Give at least one branch a priority of 0.5 or 1."; return; }
+    const name = $("#custom-name").value.trim() || `custom profile ${state.customs.length + 1}`;
+    const inv = Math.min(1, Math.max(0, parseFloat($("#custom-inv").value) || 0));
+    state.customs.push({ name, branch_weights: weights, directionality: { mode: $("#custom-dir").value, inverse_factor: inv } });
+    $("#custom-builder").hidden = true;
+    renderCustoms();
+    updateEstimate();
+  }
+
+  function renderCustoms() {
+    const box = $("#custom-list");
+    if (!state.customs.length) {
+      box.innerHTML = `<p class="muted small">None yet. A custom profile sets, for each family of Biolink entities, whether it is of primary interest (1), secondary interest (0.5) or out of scope (0); the class scope and the predicate weights are derived automatically and shipped with the results.</p>`;
+      return;
+    }
+    box.innerHTML = "";
+    state.customs.forEach((c, i) => {
+      const primary = Object.entries(c.branch_weights).filter(([, w]) => w >= 1).map(([b]) => b);
+      const secondary = Object.entries(c.branch_weights).filter(([, w]) => w < 1).map(([b]) => b);
+      const div = document.createElement("div");
+      div.className = "custom-item";
+      div.innerHTML = `<span><strong>${esc(c.name)}</strong> <span class="muted small">directionality ${esc(c.directionality.mode)}${c.directionality.mode === "on" ? " (reverse ×" + c.directionality.inverse_factor + ")" : ""}</span><br>
+        <span class="small">1: ${esc(primary.join(", ") || "–")}${secondary.length ? " · 0.5: " + esc(secondary.join(", ")) : ""}</span></span>
+        <button class="link" data-i="${i}">remove</button>`;
+      box.appendChild(div);
+    });
+    box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { state.customs.splice(+b.dataset.i, 1); renderCustoms(); updateEstimate(); }));
+  }
 
   // ---------------------------------------------------------------------------------------
   // file intake: drop zone, folder traversal, page counting for the estimate
@@ -150,7 +248,7 @@
       if (!state.files.length) { box.hidden = true; return; }
       let pages = 0;
       for (const f of state.files) pages += await countPages(f);
-      const nProfiles = selectedProfiles().length;
+      const nProfiles = nSelectedProfiles();
       try {
         const { seconds } = await api("/api/estimate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pages, n_profiles: nProfiles }) });
         box.hidden = false;
@@ -165,7 +263,7 @@
     const btn = $("#submit"), err = $("#submit-error");
     err.hidden = true;
     const profiles = selectedProfiles();
-    if (!profiles.length) { err.hidden = false; err.textContent = "Select at least one profile."; return; }
+    if (!profiles.length && !state.customs.length) { err.hidden = false; err.textContent = "Select at least one profile or build a custom one."; return; }
     btn.disabled = true; btn.textContent = "Uploading…";
     try {
       const fd = new FormData();
@@ -173,9 +271,10 @@
       fd.append("paths", JSON.stringify(state.files.map((f) => f.path)));
       fd.append("name", $("#job-name").value.trim());
       fd.append("profiles", JSON.stringify(profiles));
+      fd.append("custom_profiles", JSON.stringify(state.customs));
       fd.append("options", JSON.stringify({ review: $("#opt-review").checked, offline: $("#opt-offline").checked, gate: $("#opt-gate").value }));
       const job = await api("/api/jobs", { method: "POST", body: fd });
-      state.files = []; $("#job-name").value = ""; renderFiles();
+      state.files = []; state.customs = []; renderCustoms(); $("#job-name").value = ""; renderFiles();
       state.selected = job.id;
       await refresh();
     } catch (e) {
@@ -372,6 +471,11 @@
   window.addEventListener("dragover", (e) => e.preventDefault());
   window.addEventListener("drop", (e) => e.preventDefault());
 
+  $("#custom-open").addEventListener("click", openBuilder);
+  $("#custom-cancel").addEventListener("click", () => { $("#custom-builder").hidden = true; });
+  $("#custom-add").addEventListener("click", addCustom);
+  $("#custom-base").addEventListener("change", applyBase);
+  $("#custom-dir").addEventListener("change", () => { $("#custom-inv-label").hidden = $("#custom-dir").value !== "on"; });
   loadStatus(); loadProfiles(); refresh();
   setInterval(refresh, 3000);
   setInterval(loadStatus, 20000);

@@ -127,3 +127,21 @@ input[type=range] { width: 100%; }
 .overlay.legend .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .overlay.legend .caption { color: var(--muted); font-size: 11px; margin-top: 4px; }
 .hint-box { background: var(--accent-soft); border-radius: 6px; padding: 6px 8px; font-size: 11px; color: #0f3d3a; margin: 4px 0 8px; }
+
+/* custom profile builder */
+.builder { border: 1px solid #d8d8d8; border-radius: 6px; padding: 10px 12px; margin-top: 6px; background: #fafafa; }
+.builder-head { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; }
+.builder-head label { display: flex; flex-direction: column; gap: 2px; font-size: 0.9em; }
+.builder-head input, .builder-head select { min-width: 12em; }
+.branches { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 4px 14px; margin: 8px 0; }
+.branches h4 { grid-column: 1 / -1; margin: 8px 0 2px; font-size: 0.9em; color: #555; border-bottom: 1px solid #e4e4e4; }
+.branch { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.9em; padding: 2px 0; }
+.branch .bname { flex: 1; }
+.branch .bname .muted { display: block; font-size: 0.8em; }
+.branch.empty .bname { color: #999; }
+.seg { display: inline-flex; border: 1px solid #bbb; border-radius: 4px; overflow: hidden; }
+.seg button { border: 0; background: #fff; padding: 2px 8px; cursor: pointer; font-size: 0.85em; border-left: 1px solid #ddd; }
+.seg button:first-child { border-left: 0; }
+.seg button.on { background: #2b6cb0; color: #fff; }
+.seg button.on.half { background: #7fa7d6; }
+.custom-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px dashed #e4e4e4; font-size: 0.92em; }
