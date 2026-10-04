@@ -15,3 +15,6 @@ Output/
 # Pipeline output (contains full transcriptions of the slide material above)
 output/
 .aider*
+
+# Archived intermediate runs and logs (see archive/MANIFEST.md)
+archive/
