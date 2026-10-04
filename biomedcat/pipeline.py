@@ -257,6 +257,19 @@ def _write_json(result: PipelineResult, out_path: Path, elapsed: float, model_id
 
 
 def _print_results(result: PipelineResult) -> None:
+    # The console summary must never abort a run: on a cp1252 console a Greek letter in the
+    # reading (kappa, 4 Oct 2026, VoieA) raised UnicodeEncodeError before the JSON was written.
+    # The JSON is now written first (see the call sites) and the console falls back to
+    # replacement characters.
+    try:
+        _print_results_unsafe(result)
+    except UnicodeEncodeError:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="replace")
+            _print_results_unsafe(result)
+
+
+def _print_results_unsafe(result: PipelineResult) -> None:
     print("\n" + "=" * 72)
     print(f"RESULTS for {result.filename}")
     print("=" * 72)
@@ -304,8 +317,8 @@ if __name__ == "__main__":
             stage1, local_only, stem = apply_review(review_path)
             result = run_stage2(stage1, stage1.filename, settings, local_only_terms=local_only)
             out_path = OUTPUT_DIR / f"{stem}_BiomedCAT.json"
-            _print_results(result)
             _write_json(result, out_path=out_path, elapsed=time.perf_counter() - t0, model_id=stage1.ner_model or DEFAULT_MODEL)
+            _print_results(result)
             print(f"\nWrote {out_path}")
         finally:
             _stop_file_log(file_log)
@@ -344,8 +357,8 @@ if __name__ == "__main__":
                 event_emitter.on_stage_change(path_str, "Review", "waiting")
             else:
                 result = process_file(path_str, settings, model_id=DEFAULT_MODEL)
-                _print_results(result)
                 written = _write_json(result, out_path=out_path, elapsed=time.perf_counter() - t0, model_id=DEFAULT_MODEL)
+                _print_results(result)
                 print(f"\nWrote {written}")
                 event_emitter.on_success(path_str, str(out_path))
             processed += 1
