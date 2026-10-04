@@ -17,6 +17,7 @@ Key Features:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import warnings
@@ -29,6 +30,10 @@ from pathlib import Path
 import yaml
 
 CACHE_FILE = Path("data/.biolink_cache.json")
+LOCAL_YAML = Path("data/biolink-model.yaml")           # written by every successful download
+OUTPUT_NESTED = "data/biolink_classes_nested.json"
+OUTPUT_FLAT = "data/biolink_classes_flat.json"
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # URL / path resolution
@@ -455,9 +460,39 @@ def run_smart_update(
         False if the cached Git blob SHA is unchanged.
     """
     cache_file = cache_file or CACHE_FILE
-
-    remote_sha = get_remote_blob_sha(source_url)
     local_cache = load_cache(cache_file)
+    outputs_exist = Path(OUTPUT_FLAT).is_file() and Path(OUTPUT_NESTED).is_file()
+
+    # A local YAML path: nothing to check remotely; process it once, then reuse the outputs.
+    if os.path.exists(source_url):
+        if local_cache.get("source_url") == source_url and outputs_exist:
+            return False
+        logger.info("Biolink model read from the local file %s", source_url)
+        processor_func(source=source_url)
+        save_cache(cache_file=cache_file, source_url=source_url, remote_sha="")
+        return True
+
+    # Offline mode, or GitHub unreachable: fall back to the YAML cached by the last download.
+    remote_sha = None
+    if settings.resolvers_offline:
+        logger.warning("Offline mode: the Biolink model is not checked against GitHub.")
+    else:
+        try:
+            remote_sha = get_remote_blob_sha(source_url)
+        except (RuntimeError, ValueError) as error:
+            logger.warning("Biolink model update check failed (%s): using the cached copy.", error)
+    if remote_sha is None:
+        if outputs_exist:
+            logger.warning("Using the cached Biolink model (%s).", LOCAL_YAML)
+            return False
+        if LOCAL_YAML.is_file():
+            logger.warning("Rebuilding the Biolink class tables from the cached YAML %s.", LOCAL_YAML)
+            processor_func(source=str(LOCAL_YAML))
+            return True
+        raise RuntimeError(
+            f"No network access to {source_url} and no cached Biolink model at {LOCAL_YAML}: "
+            "run once online, or set BIOLINK_MODEL_SOURCE to a local YAML path."
+        )
 
     cached_sha = local_cache.get("blob_sha")
     cached_source_url = local_cache.get("source_url")
