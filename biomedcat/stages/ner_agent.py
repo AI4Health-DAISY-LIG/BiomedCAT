@@ -16,6 +16,8 @@ from biomedcat.stages.rag_engine import build_rag
 
 logger = logging.getLogger(__name__)
 
+AGENT_TERSE=1 # asks for telegraphic THOUGHT lines (fewer generated tokens per step).
+
 def implements_verification(verdict: str) -> str:
     """Helper to ensure the verdict is valid."""
     return verdict if verdict in ENTITY_TYPES else "NONE"
@@ -35,6 +37,37 @@ class NERAgentPipeline:
         self.classification_model_id = classification_model_id
         self.sanitization_model_id = sanitization_model_id
         self.max_agent_steps = 3  # a verdict is reached in 1-3 steps in practice; more only loops
+
+        # Second pass for hard terms (AGENT_SECOND_PASS=1): when the first episode ends without a
+        # verdict, or only through the closing turn, or after using every step, the term is run
+        # again with a wider candidate list (AGENT_SECOND_PASS_TOP_K), more steps
+        # (AGENT_SECOND_PASS_STEPS) and, optionally, the model's hidden reasoning switched on with
+        # its own token budget (AGENT_THINK_BUDGET, added to MAX_NEW_TOKENS). Measured 12 Sept 2026.
+        self.second_pass = os.getenv("AGENT_SECOND_PASS", "0") in ("1", "true", "yes")
+        self.second_pass_top_k = int(os.getenv("AGENT_SECOND_PASS_TOP_K", "20"))
+        self.second_pass_steps = int(os.getenv("AGENT_SECOND_PASS_STEPS", "5"))
+        self.think_budget = int(os.getenv("AGENT_THINK_BUDGET", "0"))      # > 0: think on in the second pass
+        self.think_first_pass = os.getenv("AGENT_THINK_FIRST_PASS", "0") in ("1", "true", "yes")
+
+        self.terse = os.getenv("AGENT_TERSE", "0") in ("1", "true", "yes")
+        self._episode_top_k: Optional[int] = None
+
+        # "Search then decide" mode (AGENT_MODE=decide, measured 14-16 Sept 2026: 0.467 against
+        # 0.407 for the ReAct loop on the 300 reference terms). No tool loop: one retrieval of the
+        # raw term, the top candidates plus the is_a neighbourhood (children, siblings, parent) of
+        # the first ones, and ONE decision call with the model's hidden reasoning on. The
+        # candidate list is capped because selection degrades above ~30 entries (D20N 0.430).
+        self.mode = os.getenv("AGENT_MODE", "react").strip().lower()
+        self.decide_top_k = int(os.getenv("AGENT_DECIDE_TOP_K", "10"))
+        self.decide_neighbours_of = int(os.getenv("AGENT_DECIDE_NEIGHBOURS_OF", "3"))
+        self.decide_cap = int(os.getenv("AGENT_DECIDE_CAP", "30"))
+        # Experiment (20 Sept 2026): drop the Biolink grouping classes ("X or Y") from the
+        # neighbourhood; the decide mode was measured to fall back on them (biological process
+        # or activity absorbed 10/65 verdicts of the FSHD deck, physiological process 0.40 -> 0.05
+        # on the real benchmark). Retrieved candidates are never dropped, only added neighbours.
+        self.decide_no_grouping = os.getenv("AGENT_DECIDE_NO_GROUPING", "0").strip().lower() in ("1", "true", "yes")
+        self.decide_search_depth = int(os.getenv("AGENT_DECIDE_SEARCH_DEPTH", "20"))   # fusion depth of the retrieval
+        self.decide_num_predict = int(os.getenv("AGENT_DECIDE_NUM_PREDICT", "1500"))   # hidden reasoning + one verdict line
         self.MAX_INPUT_LENGTH = 5000
         self.MAX_NEW_TOKENS = 700  # agent replies average ~500 characters; 5000 only let the model ramble
         self.current_sentence = None  # Pour stocker le contexte courant
@@ -47,7 +80,12 @@ class NERAgentPipeline:
         
         # Load the sentence model once. Without scispaCy, a blank English pipeline with the
         # rule-based sentencizer keeps the stage functional (segmentation only, no POS tags).
+        # SCISPACY=0 reproduces the published configuration (benchmark and document runs of
+        # 5-10 Sept 2026, before the model was installed): rule-based sentencizer here, basic
+        # tokenizer and no BM25 leg in the retriever.
         try:
+            if os.getenv("SCISPACY", "1") in ("0", "off", "false"):
+                raise OSError("disabled by SCISPACY=0")
             self.nlp = spacy.load("en_core_sci_sm")
             logger.info("Successfully loaded scispaCy model")
         except Exception as e:  # missing model (OSError) or a model built for another spaCy version
@@ -217,7 +255,7 @@ class NERAgentPipeline:
         # The query is the agent's description of the term; appending the whole sentence diluted
         # the embedding and returned unrelated classes.
         # Candidate list size shown to the agent (AGENT_SEARCH_TOP_K, default 10).
-        top_k = int(os.getenv("AGENT_SEARCH_TOP_K", "10"))
+        top_k = self._episode_top_k or int(os.getenv("AGENT_SEARCH_TOP_K", "10"))
         results = self.rag_engine.search(query, top_k=top_k)
         # The raw term is searched too: since the exemplar index holds mentions, the surface
         # form often retrieves the class directly; both rankings are fused by reciprocal rank.
@@ -441,6 +479,107 @@ class NERAgentPipeline:
                                     "definitions come from the tools):\n" + "\n".join(lines))
         return self._skeleton_cache
 
+    # ---------------------------------------------------------------------------
+    # "Search then decide" mode
+    # ---------------------------------------------------------------------------
+
+    def _neighbours(self, class_name: str) -> List[str]:
+        """is_a neighbourhood of a class: its children, its siblings (the other children of its
+        is_a parent) and the parent, assignable classes only. Mixin groups are deliberately not
+        included (no effect measured, 16 Sept 2026)."""
+        flat = self.rag_engine.flat_data
+        meta = lambda c: flat.get(c, {}).get("metadata", {})
+        ok = lambda c: c in flat and self.rag_engine._indexable(meta(c))
+        out = [x for x in (meta(class_name).get("children") or []) if ok(x)]
+        parent = meta(class_name).get("parent")
+        if parent:
+            out += [x for x in (meta(parent).get("children") or []) if x != class_name and ok(x)]
+            if ok(parent):
+                out.append(parent)
+        if self.decide_no_grouping:
+            out = [x for x in out if " or " not in x]
+        return out
+
+    def _decide_candidates(self, term: str) -> List[str]:
+        """Top-k retrieval of the raw term (fused at `decide_search_depth`), then the neighbourhood
+        of the first `decide_neighbours_of` candidates, deduplicated, capped at `decide_cap`."""
+        top = self.rag_engine.search(term, top_k=max(self.decide_search_depth, self.decide_top_k)) or []
+        cands = list(top[:self.decide_top_k])
+        for c in top[:self.decide_neighbours_of]:
+            for x in self._neighbours(c):
+                if x not in cands:
+                    cands.append(x)
+        return cands[:self.decide_cap]
+
+    # Not used by the decision menu (see _decide_prompt): a sentence / word-boundary cut was tried
+    # on 20 Sept 2026 and measured worse than the hard 150-character cut (0.417 vs 0.470 on the
+    # 300 reference terms). Kept for experiments (output/decide_prompt_v2_test.py).
+    DECIDE_DEFINITION_CHARS = 250
+
+    @classmethod
+    def _short_definition(cls, definition: str, limit: Optional[int] = None) -> str:
+        """First sentence of a Biolink definition when it fits in `limit` characters, else the
+        longest prefix that ends on a word boundary, marked with an ellipsis. Whitespace is folded.
+        Experimental helper, not used by the published decide prompt."""
+        limit = cls.DECIDE_DEFINITION_CHARS if limit is None else limit
+        text = " ".join(definition.split())
+        if len(text) <= limit:
+            return text
+        head = text[:limit]
+        end = head.rfind(". ")
+        if end > 0:
+            return head[:end + 1]
+        cut = head.rfind(" ")
+        return (head[:cut] if cut > 0 else head).rstrip(",;:") + "…"
+
+    def _decide_prompt(self, term: str, sentence: str, candidates: List[str]) -> str:
+        """One decision prompt: the candidate list with definitions, the mention, its sentence when
+        one exists (document context; on the benchmark the sentence is the term itself), the
+        privacy rule of the ReAct prompt, the decision rule, and the verdict line format."""
+        flat = self.rag_engine.flat_data
+        lines = []
+        for c in candidates:
+            # Hard cut at 150 characters, exactly as measured (300 terms 0.470, 1,356 terms 0.486 x2,
+            # FSHD deck 0.517, real benchmark 0.371). Do not "improve" it without re-measuring: the
+            # word-boundary cut at 250 characters (_short_definition) alone cost 5.3 points on the
+            # 300 reference terms (0.417, 20 Sept 2026), the menu being 9% longer.
+            definition = (flat.get(c, {}).get("metadata", {}).get("definition") or "")[:150]
+            lines.append(f"- {c}: {definition}")
+        menu = "\n".join(lines)
+        has_context = bool(sentence) and sentence.strip().lower() != term.strip().lower()
+        context = f"Sentence: {sentence}\n" if has_context else ""
+        privacy = ("Never classify information about identifiable people (person names, patient or sample "
+                   "identifiers, dates, ages, addresses, contact details): answer none for such a mention.\n") if has_context else ""
+        return (f"Classify the biomedical mention into exactly one Biolink class from this list, or answer none if it is "
+                f"not a biomedical entity.\n{menu}\n\n{context}Mention: {term}\n{privacy}"
+                "Decision rule: choose the most specific class the evidence supports; if none of the child classes holds, "
+                "answer the parent class; never a more specific class than the evidence supports.\n"
+                "Reply with one line: FINAL_VERDICT: <class name>")
+
+    def _run_decide(self, term_clean: str, sentence_int: str) -> Optional[str]:
+        """One call, no tools. The verdict must be one of the candidates (or none); a verdict naming
+        another class is recovered from the candidate names cited in the reply, else no verdict."""
+        candidates = self._decide_candidates(term_clean)
+        self._seen_classes = list(candidates)
+        if not candidates:
+            logger.warning("[Agent Decide] %r: no candidate from the retriever", term_clean)
+            return None
+        messages = [{"role": "user", "content": self._decide_prompt(term_clean, sentence_int, candidates)}]
+        response = generate(self.classification_model_id, messages, self.decide_num_predict, 0.0, think=True, raw=True)
+        logger.info(f"[Agent Decide] {term_clean!r}: {len(candidates)} candidates | Response: {response}")
+        is_valid, verdict, error_msg = self._validate_output(response)
+        if is_valid and (verdict == "NONE" or verdict in candidates):
+            return verdict
+        # Recovery: the reply names one of the candidates (longest match wins), as in the closing turn.
+        lowered = response.lower()
+        named = [c for c in candidates if c.lower() in lowered]
+        if named:
+            verdict = max(named, key=len)
+            logger.info("[Agent Decide] verdict recovered from the reply for %r: %s", term_clean, verdict)
+            return verdict
+        logger.warning("[Agent Decide] no admissible verdict for %r: %s", term_clean, error_msg or f"'{verdict}' is not a candidate")
+        return None
+
     def _run_agentic_loop(self, term: str, sentence: str) -> Optional[str]:
         """The ReAct loop: Thought -> Action -> Observation."""
         
@@ -454,16 +593,41 @@ class NERAgentPipeline:
             return self._verdict_cache[cache_key]
 
         self.current_term = term_clean
+        if self.mode == "decide":
+            verdict = self._run_decide(term_clean, sentence_int)
+            self._verdict_cache[cache_key] = verdict
+            return verdict
+        verdict, hard = self._run_episode(term_clean, sentence_int, self.max_agent_steps, None,
+                                          self.think_first_pass and self.think_budget > 0)
+        if self.second_pass and hard:
+            logger.info("[Agent] second pass for %r (first pass: %s)", term_clean, verdict)
+            second, _ = self._run_episode(term_clean, sentence_int, self.second_pass_steps, self.second_pass_top_k,
+                                          self.think_budget > 0)
+            if second is not None:
+                verdict = second
+        self._verdict_cache[cache_key] = verdict
+        return verdict
+
+    def _run_episode(self, term_clean: str, sentence_int: str, max_steps: int, top_k: Optional[int],
+                     think: bool) -> tuple[Optional[str], bool]:
+        """One ReAct episode. Returns (verdict, hard): `hard` is True when the episode ended without
+        a verdict, through the closing turn only, or after using every step."""
+        self._episode_top_k = top_k
+        budget = self.MAX_NEW_TOKENS + (self.think_budget if think else 0)
         self._seen_classes: List[str] = []
         system_prompt = self._agent_system_prompt().format(sentence=sentence_int)
+        if self.terse:
+            system_prompt += "\nKeep every THOUGHT to one short telegraphic line (at most 25 words)."
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Sentence: {sentence_int}\nTerm to classify: {term_clean}"}
         ]
 
         verdict: Optional[str] = None
-        for step in range(self.max_agent_steps):
-            response = generate(self.classification_model_id, messages, self.MAX_NEW_TOKENS, 0.0)
+        steps_used = 0
+        for step in range(max_steps):
+            steps_used = step + 1
+            response = generate(self.classification_model_id, messages, budget, 0.0, think=think or None)
             messages.append({"role": "assistant", "content": response})
             logger.info(f"[Agent Step {step+1}] Response: {response}")
 
@@ -500,6 +664,7 @@ class NERAgentPipeline:
                 logger.warning("Agent failed to provide an ACTION or FINAL_VERDICT.")
                 break
 
+        closing_turn = False
         if verdict is None and len(messages) > 2:
             # The model often knows the class after one or two observations but keeps calling
             # tools; one forced closing turn, no tools allowed, recovers those verdicts cheaply.
@@ -512,6 +677,7 @@ class NERAgentPipeline:
                 "or FINAL_VERDICT: none if the term is not a biomedical entity.")})
             response = generate(self.classification_model_id, messages, 60, 0.0)
             logger.info(f"[Agent Final] Response: {response}")
+            closing_turn = True
             is_valid, final_verdict, error_msg = self._validate_output(response)
             if is_valid:
                 verdict = final_verdict
@@ -525,8 +691,9 @@ class NERAgentPipeline:
                 else:
                     logger.warning("[Agent] no verdict for %r after the closing turn: %s", term_clean, error_msg)
 
-        self._verdict_cache[cache_key] = verdict
-        return verdict
+        self._episode_top_k = None
+        hard = verdict is None or closing_turn or steps_used >= max_steps
+        return verdict, hard
 
     def extract(self, text: List[str]) -> List[Entity]:
         """Main entry point for the NER Agent."""
@@ -562,6 +729,10 @@ class NERAgentPipeline:
                         if final_type and final_type != "NONE":
                             all_entities.append(Entity(text=term, type=implements_verification(final_type), segment=sentence))
 
+        # The typing model has finished its work for this document: release it before the
+        # existence gate loads the second model family (llama3:8b), so the two never coexist.
+        from biomedcat.runtime import unload_models
+        unload_models(self.classification_model_id, self.sanitization_model_id)
         keep = self.existence_gate([e.text for e in all_entities])
         return [e for e in all_entities if keep.get(e.text.strip().lower(), True)]
 
@@ -571,10 +742,16 @@ class NERAgentPipeline:
 
     def existence_gate(self, terms: List[str]) -> Dict[str, bool]:
         """Lowercased term -> keep? The classifier invents entities from spelling; a term is
-        dropped when the Elasticsearch name resolver has no candidate at all ("es") and/or when a
-        model of another family does not recognise it ("llm"), per settings.existence_gate.
+        dropped when the Name Resolver (production instance) has no candidate at all ("nameres",
+        legacy alias "es") and/or when a model of another family does not recognise it ("llm"),
+        per settings.existence_gate.
         Batched so the second model is loaded once per document, not once per term."""
-        mode = settings.existence_gate
+        mode = "nameres" if settings.existence_gate == "es" else settings.existence_gate
+        if settings.resolvers_offline and mode in ("nameres", "union"):
+            # Offline mode: no term may leave the machine, so the resolver leg is dropped and
+            # only the local second-family model remains (nothing at all for "nameres").
+            mode = "llm" if mode == "union" else "off"
+            logger.warning("[Gate] offline mode: the name-resolver check is skipped, gate mode is now %r", mode)
         # Keyed by the lowercased term, looked up with its original surface form (case matters
         # to the resolver: DUX4, not dux4).
         surface = {t.strip().lower(): t.strip() for t in terms if t.strip()}
@@ -582,9 +759,9 @@ class NERAgentPipeline:
         keep = {t: True for t in uniq}
         if mode == "off" or not uniq:
             return keep
-        if mode in ("es", "union"):
+        if mode in ("nameres", "union"):
             for t in uniq:
-                if not self._es_has_candidate(surface[t]):
+                if not self._nameres_has_candidate(surface[t]):
                     keep[t] = False
         if mode in ("llm", "union"):
             for t in self._llm_unknown_terms([surface[t] for t in uniq if keep[t]]):
@@ -593,11 +770,12 @@ class NERAgentPipeline:
         logger.info("[Gate %s] %d/%d terms rejected: %s", mode, len(rejected), len(uniq), rejected)
         return keep
 
-    def _es_has_candidate(self, term: str) -> bool:
-        """True when the Elasticsearch name resolver returns at least one candidate (any type).
+    def _nameres_has_candidate(self, term: str) -> bool:
+        """True when the Name Resolver returns at least one candidate (any type, no type filter:
+        the question is whether the string names anything at all).
         A failed request keeps the term: the gate must never reject on a network error."""
         from biomedcat.retrieval import _fetch_json
-        data = _fetch_json(settings.nameres_es_url, {"string": term, "limit": 3})
+        data = _fetch_json(settings.gate_nameres_url, {"string": term, "limit": 3})
         return True if data is None else bool(data)
 
     def _llm_unknown_terms(self, terms: List[str], batch: int = 40) -> List[str]:

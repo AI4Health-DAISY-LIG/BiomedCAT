@@ -40,7 +40,7 @@ def _sampling_options(temperature: float) -> dict:
 
 
 def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, temperature: float = 0.0,
-             think: bool | None = None) -> str:
+             think: bool | None = None, raw: bool = False) -> str:
     """
     Sends a request to the Ollama API to generate a response.
 
@@ -49,20 +49,30 @@ def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int,
         messages: A list of message dictionaries (role and content).
         max_new_tokens: Maximum number of tokens to predict.
         temperature: Sampling temperature.
+        raw: Send the message contents as they are, without the "Role: " labels. The labels were
+            measured to change the greedy trajectory of gemma-4-e4b: on the 59 reference terms
+            where the two forms disagreed, the raw prompt gave 22 correct verdicts and the
+            labelled one 6 (18 Sept 2026). The decide mode of the typing agent uses raw prompts;
+            the ReAct loop, the judge and the existence gate keep the labelled form their
+            published numbers were measured with.
 
     Returns:
         The generated text response from the model, or an empty string if an error occurs.
     """
-    prompt = ""
-    for msg in messages:
-        role = msg.get("role", "user").capitalize()
-        content = msg["content"]
-        prompt += f"{role}: {content}\n"
+    if raw:
+        prompt = "\n".join(msg["content"] for msg in messages)
+    else:
+        prompt = ""
+        for msg in messages:
+            role = msg.get("role", "user").capitalize()
+            content = msg["content"]
+            prompt += f"{role}: {content}\n"
+        prompt = prompt.strip()
 
     url = f"{settings.ollama_url.rstrip('/')}/api/generate"
     payload = {
         "model": model_id,
-        "prompt": prompt.strip(),
+        "prompt": prompt,
         "stream": False,
         # Resident for the stage (see config.ollama_keep_alive); released by unload_models().
         "keep_alive": settings.ollama_keep_alive,

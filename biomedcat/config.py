@@ -12,7 +12,11 @@ class Settings:
         # URL of the Ollama instance (default to host via Docker bridge)
         # self.ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434")
         self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434") 
-        self.biolink_model_data = "https://github.com/biolink/biolink-model/blob/master/biolink-model.yaml"
+        # Biolink model source, pinned to the release used by every result of the paper (4.4.4).
+        # `master` moved on 17 Sept 2026 without changing the 159 classes in use, but a later
+        # commit could: the release tag makes the class index reproducible. Override with
+        # BIOLINK_MODEL_SOURCE (a GitHub blob URL or a local YAML path).
+        self.biolink_model_data = os.getenv("BIOLINK_MODEL_SOURCE", "https://github.com/biolink/biolink-model/blob/v4.4.4/biolink-model.yaml")
 
         # INPUTS. PPTX is not accepted: export slides to PDF first (LibreOffice is no longer a dependency).
         self.supported_docs = {".pdf", ".png", ".jpg", ".jpeg"}
@@ -73,20 +77,23 @@ class Settings:
         # (not once per term). "0" disables it. It is a content-safety check, not an injection
         # detector; injection is handled structurally in the NER agent.
         self.document_screening = os.getenv("DOCUMENT_SCREENING", "1") not in ("0", "false", "no")
-        # Existence gate applied once per document to the agent's typed terms, against the
-        # invention of entities by the classifier: "es" rejects terms without any candidate in
-        # the Elasticsearch name resolver, "llm" those a model of another family does not
-        # recognise, "union" (default) either, "off" disables the gate.
-        self.existence_gate = os.getenv("EXISTENCE_GATE", "union")
-        self.existence_model_id = os.getenv("EXISTENCE_MODEL_ID", "llama3:8b")
-        self.nameres_es_url = os.getenv("NAMERES_ES_URL", "https://namelookup-es.ci.transltr.io/lookup")
-        # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
-
         # Resolver service URLs (configure via environment if needed).
         # RENCI Name Resolver: GET /lookup?string=...&limit=N[&biolink_type=...] -> list of candidates.
         # ARAX entity endpoint: GET /entity?q=term -> {term: {"id": {...}, "knowledge_graph": {...}}}.
         self.renci_url = os.getenv("RENCI_URL", "https://name-resolution-sri.renci.org/lookup")
         self.arax_url = os.getenv("ARAX_URL", "https://arax.ncats.io/beta/api/arax/v1.4/entity")
+
+        # Existence gate applied once per document to the agent's typed terms, against the
+        # invention of entities by the classifier: "nameres" rejects terms without any candidate
+        # in the Name Resolver (production instance, the same service as the linking; "es" is
+        # accepted as a legacy alias from the time the gate used the Elasticsearch test instance),
+        # "llm" those a model of another family does not recognise, "union" (default) either,
+        # "off" disables the gate. Since 5 Oct 2026 the gate queries the production Name Resolver.
+        self.existence_gate = os.getenv("EXISTENCE_GATE", "union")
+        self.existence_model_id = os.getenv("EXISTENCE_MODEL_ID", "llama3:8b")
+        self.gate_nameres_url = os.getenv("GATE_NAMERES_URL", os.getenv("NAMERES_ES_URL", self.renci_url))
+        self.nameres_es_url = self.gate_nameres_url   # legacy name, kept for the evaluation scripts
+        # self.llm_model_id = os.getenv("LLM_MODEL_ID", self.model_name)
         # Translator Node Normalizer: clique-preferred id for CURIEs absent from the local table.
         self.nodenorm_url = os.getenv("NODENORM_URL", "https://nodenorm.transltr.io/1.5/get_normalized_nodes")
 

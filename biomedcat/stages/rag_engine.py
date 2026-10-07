@@ -49,6 +49,10 @@ class BiomedRAG:
 
         logger.info("[*] Loading scispaCy model for tokenization...")
         try:
+            # SCISPACY=0 reproduces the published configuration (runs of 5-10 Sept 2026, model not
+            # installed): basic tokenizer and no sparse (BM25) leg.
+            if os.getenv("SCISPACY", "1") in ("0", "off", "false"):
+                raise OSError("disabled by SCISPACY=0")
             self.nlp = spacy.load("en_core_sci_sm")
         except Exception as e:  # missing model or a model built for another spaCy version
             logger.warning("[!] scispaCy model unavailable (%s). Falling back to basic tokenizer.", type(e).__name__)
@@ -193,6 +197,13 @@ class BiomedRAG:
         if not self.flat_data:                                                                                                                                                                 
             return                                                                                                                                                                             
                                                                                                                                                                                             
+        # RAG_BM25=0 switches the sparse leg off explicitly (ablation; measured neutral on the
+        # synthetic benchmark with scispaCy, 12 Sept 2026).
+        if os.getenv("RAG_BM25", "1") in ("0", "off", "false"):
+            logger.info("[*] Sparse (BM25) leg disabled by RAG_BM25.")
+            self.bm25 = None
+            self._bm25_corpus_map = []
+            return
         # Without scispaCy the sparse leg tokenizes with a bare regex, returns nothing for half of
         # the queries and lowers Hit@1 below the dense leg alone (measured): it is disabled then.
         if self.nlp is None:
@@ -288,6 +299,15 @@ class BiomedRAG:
         for rank, class_id in enumerate(exemplar_results):
             rrf_scores[class_id] += self.exemplar_weight / (k + rank)
 
+        # --- 2c. Lexical leg: exact surface match on names, aliases, examples, exemplars ---
+        if getattr(self, "lexical_weight", 0.0) > 0:
+            for rank, class_id in enumerate(self._search_lexical(query)):
+                rrf_scores[class_id] += self.lexical_weight / (k + rank)
+            # KG2c exact-name leg, its own weight (RAG_KG2C_LEXICAL_WEIGHT): a mention that IS a
+            # node name or synonym is strong evidence, stronger than one dense neighbour.
+            for rank, class_id in enumerate(self._search_kg2c_names(query)):
+                rrf_scores[class_id] += self.kg2c_lexical_weight / (k + rank)
+
         # Trier les classes par le score RRF final
         sorted_classes = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
         
@@ -326,7 +346,108 @@ class BiomedRAG:
                 collection.add(ids=[f"ex{i}" for i in idx], documents=[texts[i] for i in idx], metadatas=[{"class": classes[i]} for i in idx])
             marker.write_text(stamp, encoding="utf-8")
         self.exemplars = collection
+        self._build_lexical_table(table)
         logger.info("[+] Exemplar index ready (%d documents).", collection.count())
+
+    def _build_lexical_table(self, exemplar_table=None) -> None:
+        """Exact-surface lookup: lowercased class names, aliases, examples and exemplar strings -> classes.
+
+        A dense encoder cannot anchor a bare gene symbol or an abbreviation ("ABCD3", "DM"); an
+        exact string match can. This leg (RAG_LEXICAL_WEIGHT, default 1.0, "0" disables) adds
+        classes whose recorded surface forms equal the query, at rank 0 of a fourth RRF leg.
+        Names and aliases come first, exemplar strings after, so a class named exactly as the
+        query outranks a class that merely lists it as an exemplar.
+        """
+        self.lexical_weight = float(os.getenv("RAG_LEXICAL_WEIGHT", "1.0"))
+        table: Dict[str, List[str]] = {}
+        if self.lexical_weight <= 0:
+            # Published configuration: the leg is off, so the table is not built and the log says
+            # so (before 4 Oct 2026 the table was built and logged even at weight 0; it was never
+            # used in the fusion, which checks the weight).
+            self._lexical = table
+            self._kg2c_lex = None
+            self.kg2c_lexical_weight = 0.0
+            logger.info("[*] Lexical leg disabled (RAG_LEXICAL_WEIGHT=0).")
+            return
+        def add(surface: str, cls: str) -> None:
+            key = re.sub(r"\s+", " ", (surface or "").strip().lower())
+            if key and cls not in table.setdefault(key, []):
+                table[key].append(cls)
+        for cls, entry in self.flat_data.items():
+            meta = entry.get("metadata", {})
+            if not self._indexable(meta):
+                continue
+            add(cls, cls)
+            for a in re.split(r"[;,]", str(meta.get("aliases") or "")):
+                add(a, cls)
+            ex = meta.get("examples") or ""
+            for e in (ex if isinstance(ex, list) else re.split(r"[;]", str(ex))):
+                add(e, cls)
+        if exemplar_table is not None:
+            for cls, text in zip(exemplar_table.column("class").to_pylist(), exemplar_table.column("exemplar").to_pylist()):
+                if cls in self.flat_data and self._indexable(self.flat_data[cls]["metadata"]):
+                    add(text, cls)
+        self._lexical = table
+        logger.info("[+] Lexical table ready (%d surface forms).", len(table))
+        self._setup_kg2c_lexical()
+
+    def _setup_kg2c_lexical(self) -> None:
+        """Exact-name lookup in the filtered KG2c node table (RAG_KG2C_LEXICAL, default on).
+
+        The Biolink documents and exemplars cannot list every gene symbol, drug name or disease
+        name; the knowledge graph does. A mention equal to a KG2c node name (case-insensitive)
+        votes for the Biolink class of that node's category, at rank 0 of the lexical leg. The
+        lookup is a DuckDB query on a small name->category parquet built once from
+        data/kg2c/nodes.parquet (kept on disk, not in memory).
+        """
+        self._kg2c_lex = None
+        self.kg2c_lexical_weight = float(os.getenv("RAG_KG2C_LEXICAL_WEIGHT", "1.0"))
+        if os.getenv("RAG_KG2C_LEXICAL", "1") in ("0", "off", "false"):
+            return
+        try:
+            import duckdb
+            kg_dir = Path(self.config.kg2c_dir)
+            nodes = kg_dir / "nodes.parquet"
+            if not nodes.is_file():
+                return
+            table = kg_dir / "names_lower.parquet"
+            details = kg_dir / "node_details.parquet"
+            if not table.is_file() or table.stat().st_mtime < nodes.stat().st_mtime:
+                # Names plus recorded synonyms (KG2c all_names: "FSHD", "ALS", brand names), so an
+                # acronym written on a slide resolves to the category of the node it abbreviates.
+                syn_sql = (f" UNION ALL SELECT lower(s) AS name_lc, n.category FROM read_parquet('{details.as_posix()}') d "
+                           f"JOIN read_parquet('{nodes.as_posix()}') n ON n.id = d.id, UNNEST(d.synonyms) AS t(s) "
+                           f"WHERE s IS NOT NULL AND length(s) <= 60") if details.is_file() else ""
+                duckdb.connect().execute(
+                    f"COPY (SELECT name_lc, category, COUNT(*) AS n FROM (SELECT lower(name) AS name_lc, category FROM read_parquet('{nodes.as_posix()}') "
+                    f"WHERE name IS NOT NULL{syn_sql}) GROUP BY 1, 2) TO '{table.as_posix()}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+            self._kg2c_con = duckdb.connect()
+            self._kg2c_con.execute(f"CREATE TABLE kg2c_names AS SELECT * FROM read_parquet('{table.as_posix()}')")
+            self._kg2c_con.execute("CREATE INDEX kg2c_names_idx ON kg2c_names(name_lc)")
+            norm = lambda x: re.sub(r"[^a-z0-9]", "", x.lower())
+            self._class_by_norm = {norm(c): c for c in self.flat_data if self._indexable(self.flat_data[c]["metadata"])}
+            self._kg2c_lex = True
+            logger.info("[+] KG2c name lookup ready.")
+        except Exception as e:  # the leg is optional: never fail retrieval for it
+            logger.warning("[!] KG2c name lookup unavailable: %s", e)
+            self._kg2c_lex = None
+
+    def _search_kg2c_names(self, query: str) -> List[str]:
+        """Biolink classes of the KG2c nodes named exactly like the query, most frequent category first."""
+        if not getattr(self, "_kg2c_lex", None):
+            return []
+        key = re.sub(r"\s+", " ", query.strip().lower())
+        rows = self._kg2c_con.execute("SELECT category, SUM(n) AS n FROM kg2c_names WHERE name_lc = ? GROUP BY 1 ORDER BY n DESC LIMIT 5", [key]).fetchall()
+        out: List[str] = []
+        for cat, _ in rows:
+            cls = self._class_by_norm.get(re.sub(r"[^a-z0-9]", "", str(cat).replace("biolink:", "").lower()))
+            if cls and cls not in out:
+                out.append(cls)
+        return out
+
+    def _search_lexical(self, query: str) -> List[str]:
+        key = re.sub(r"\s+", " ", query.strip().lower())
+        return list(getattr(self, "_lexical", {}).get(key, []))
 
     def _search_exemplars(self, query: str, top_k: int) -> List[str]:
         """Classes ranked by their best-matching exemplar (first occurrence in the nearest list)."""
