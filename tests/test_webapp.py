@@ -86,11 +86,59 @@ def test_record_timing_feeds_the_cost_model(store):
 
 
 def test_merge_profiles_unions_scope(tmp_path):
+    from biomedcat.profiles import load_profile
+
     profiles = [p["id"] for p in jobs_mod.list_profiles()]
     out = jobs_mod.merge_profiles(profiles, tmp_path / "m.json")
     merged = json.loads(out.read_text(encoding="utf-8"))
     assert merged["members"] == profiles
-    assert set(merged["predicates"]) >= set(json.loads((jobs_mod.PROFILES_DIR / f"{profiles[0]}.json").read_text(encoding="utf-8"))["predicates"])
+    first = load_profile(jobs_mod.PROFILES_DIR / f"{profiles[0]}.json")
+    assert set(merged["predicates"]) >= set(first.predicates) and set(merged["entity_scope"]) >= set(first.entity_scope)
+
+
+def test_listed_profiles_carry_branch_weights_and_directionality():
+    listed = {p["id"]: p for p in jobs_mod.list_profiles()}
+    assert "biochemical_actions" in listed and "uniform" in listed
+    bio = listed["biochemical_actions"]
+    assert bio["branch_weights"].get("gene") == 1.0 and bio["directionality"]["mode"] == "on" and bio["n_predicates"] > 0
+    assert listed["uniform"]["directionality"]["mode"] == "off"
+
+
+def test_entity_branches_for_the_builder():
+    data = jobs_mod.entity_branches()
+    names = {b["name"] for b in data["branches"]}
+    assert {"gene", "chemical entity", "disease or phenotypic feature", "organismal entity"} <= names
+    assert "biological entity" not in names and "named thing" not in names
+    gene = next(b for b in data["branches"] if b["name"] == "gene")
+    assert gene["group"] == "biological entity" and gene["n_nodes_kg2c"] > 0 and data["levels"] == [0, 0.5, 1]
+
+
+def test_store_create_with_custom_profile(store):
+    from biomedcat.profiles import load_profile
+
+    spec = {"name": "My targets", "branch_weights": {"gene": 1, "chemical entity": 0.5, "not a branch": 1, "exon": 0},
+            "reading_focus": "gene:  regulated genes\n" + "x" * 500,
+            "directionality": {"mode": "on", "inverse_factor": 0.2}}
+    job = store.create("j", [{"file": "x.pdf", "stem": "x", "pages": 1}], ["biochemical_actions"], custom_profiles=[spec])
+    assert job.profiles == ["biochemical_actions", "custom-my-targets"] and "custom-my-targets" in job.custom_profiles
+    path = jobs_mod.profile_path("custom-my-targets", store.job_dir(job.id))
+    assert path == store.job_dir(job.id) / "profiles" / "custom-my-targets.json" and path.is_file()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["branch_weights"] == {"gene": 1.0, "chemical entity": 0.5} and saved["directionality"] == {"mode": "on", "inverse_factor": 0.2}
+    profile = load_profile(path)
+    assert profile.predicates and profile.category_weight("biolink:SmallMolecule") == 0.5 and profile.category_weight("biolink:Disease") == 0.0
+    assert profile.entity_scope == ["gene", "chemical entity"] and profile.inverse_factor == 0.2
+    # The free-text reading focus is whitespace-collapsed and capped, and reaches the reading prompt.
+    assert profile.reading_focus.startswith("gene: regulated genes x") and len(profile.reading_focus) == jobs_mod.MAX_READING_FOCUS
+    assert profile.reading_focus in __import__("biomedcat.prompts", fromlist=["ocr_description"]).ocr_description(profile.entity_scope, profile.reading_focus)
+    # Derived weights are written inside the job for the trace; the reading profile unions both.
+    assert (store.job_dir(job.id) / "profiles" / "derived" / "custom-my-targets.derived.json").is_file()
+    merged = json.loads((store.job_dir(job.id) / "profile_merged.json").read_text(encoding="utf-8"))
+    assert "gene" in merged["entity_scope"] and merged["members"] == job.profiles
+    # Reloading the store keeps the custom profiles, and a bad custom profile is refused.
+    assert store.get(job.id).custom_profiles["custom-my-targets"]["name"] == "My targets"
+    with pytest.raises(ValueError):
+        store.create("k", [{"file": "x.pdf", "stem": "x", "pages": 1}], [], custom_profiles=[{"name": "empty", "branch_weights": {"gene": 0}}])
 
 
 # ------------------------------------------------------------------------------------------
@@ -192,6 +240,19 @@ def test_api_job_lifecycle(client):
     assert client.get(f"/api/jobs/{job['id']}/graph?doc=slide1&profile=p").status_code == 404
     assert client.delete(f"/api/jobs/{job['id']}").json()["ok"] is True
     assert client.get("/api/jobs").json() == []
+
+
+def test_api_accepts_custom_profiles_and_lists_branches(client):
+    assert {b["name"] for b in client.get("/api/branches").json()["branches"]} >= {"gene", "chemical entity"}
+    custom = [{"name": "targets", "branch_weights": {"gene": 1, "polypeptide": 1, "chemical entity": 0.5}, "directionality": "off"}]
+    r = client.post("/api/jobs", files=[("files", ("a.png", io.BytesIO(b"\x89PNG" + b"0" * 16), "image/png"))],
+                    data={"paths": "[]", "profiles": "[]", "options": "{}", "name": "n", "custom_profiles": json.dumps(custom)})
+    assert r.status_code == 201, r.text
+    job = r.json()
+    assert job["profiles"] == ["custom-targets"] and job["custom_profiles"]["custom-targets"]["directionality"]["mode"] == "off"
+    r = client.post("/api/jobs", files=[("files", ("a.png", io.BytesIO(b"\x89PNG" + b"0" * 16), "image/png"))],
+                    data={"paths": "[]", "profiles": "[]", "options": "{}", "name": "n", "custom_profiles": json.dumps([{"name": "x", "branch_weights": {}}])})
+    assert r.status_code == 400
 
 
 def test_api_rejects_unsupported_uploads(client):

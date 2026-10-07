@@ -25,6 +25,14 @@ dependencies = [
     "matplotlib>=3.11.1",
     "seaborn>=0.13.2",
     "spacy>=3.8.16",
+    "openai>=3.6.0",
+    "dotenv>=0.9.9",
+    "bio>=1.8.3",
+    "duckdb>=1.5.5",
+    "psutil>=7.2.2",
+    "python-igraph>=1.0.0",
+    "python-multipart>=0.0.32",
+    "openpyxl>=3.1.5",
 ]
 
 [tool.uv]

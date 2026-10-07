@@ -1,12 +1,18 @@
+# BiomedCAT for end users: the local console and its model server.
+#
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull qwen2.5vl:3b        (and the three other models, see README)
+#   open http://localhost:8765
+#
+# The console port is bound to 127.0.0.1 only: documents never leave the machine through it.
 services:
-  # Le moteur d'inférence (isolé dans son propre conteneur)
   ollama:
     image: ollama/ollama:latest
     container_name: biomedcat_ollama
-    restart: always
-    networks:
-      - biomedcat_network
-    # Si vous avez un GPU NVIDIA, décommentez les lignes suivantes :
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    # NVIDIA GPU (optional): uncomment, with the NVIDIA Container Toolkit installed on the host.
     # deploy:
     #   resources:
     #     reservations:
@@ -15,60 +21,26 @@ services:
     #           count: 1
     #           capabilities: [gpu]
 
-  # L'API FastAPI (le pont entre le frontend et le pipeline)
-  api:
+  biomedcat:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: biomedcat_api
-    restart: always
-    environment:
-      - OLLAMA_URL=http://ollama:11434
-      - GLM_MODEL_ID=THUDM/glm-4v-9b
-      - OLLAMA_MODEL=gemma4:12b-it-qat
-    volumes:
-      - ./Dataset:/app/data
-      - ./Output:/app/output
-    command: uvicorn biomedcat.api:app --host 0.0.0.0 --port 8000
-    networks:
-      - biomedcat_network
-    ports:
-      - "8000:8000"
-
-  # Le moteur de traitement (OCR -> NER -> Norm)
-  pipeline:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: biomedcat_pipeline
-    restart: always
-    environment:
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=gemma4:12_b-it-qat
-      - GLM_MODEL_ID=THUDM/glm-4v-9b
-    volumes:
-      - ./Dataset:/app/data
-      - ./Output:/app/output
-    networks:
-      - biomedcat_network
-
-  # L'interface utilisateur (Next.js)
-  frontend:
-    image: node:20-slim
-    container_name: biomedcat_frontend
-    working_dir: /app/frontend
-    volumes:
-      - ./frontend:/app/frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-    networks:
-      - biomedcat_network
+    container_name: biomedcat_console
+    restart: unless-stopped
     depends_on:
-      - api
       - ollama
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      # Fully local mode (no entity name sent to the Translator services): uncomment.
+      # - RESOLVERS_OFFLINE=1
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/app/data            # KG2c tables, profiles, Biolink index (see README)
+      - ./output:/app/output        # job results
+      - ./Dataset:/app/dataset      # uploaded documents
+      - hf_cache:/root/.cache/huggingface   # embedding model, downloaded once
 
-networks:
-  biomedcat_network:
-    driver: bridge
+volumes:
+  ollama_models:
+  hf_cache:

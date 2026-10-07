@@ -6,11 +6,18 @@ The full KG2c graph (about 6.7 M nodes and 27 M edges in version 2.10.1) does no
 engine coexist. This script streams the KG2c JSONL dumps once and keeps everything that is
 *structurally* usable by any preference profile, present or future:
 
-  1. edges whose predicate, and nodes whose category, are not part of the Biolink model
-     itself (--strata, derived from biolink-model.yaml by scripts/build_biolink_strata.py):
-     RTX-KG2c carries a handful of predicates of its own that are not standard Biolink terms
-     (a doubled "biolink_" prefix, e.g. biolink:biolink_treats) -- the graph is aligned to the
-     Biolink version of --strata, not to whatever RTX-KG2c happens to emit;
+  1. edges whose predicate, and nodes whose category, are not literally a class or a slot of
+     --biolink-yaml (data/biolink-model.yaml itself, read directly -- *not*
+     data/biolink_strata.json, which only keeps the entity classes and "related to"-descended
+     slots relevant to BiomedCAT's reading strata, a narrower and different set from "every
+     class/slot Biolink defines"). Before that check, a predicate carrying RTX-KG2c's redundant
+     doubled "biolink_" prefix (biolink:biolink_treats, biolink:biolink_in_clinical_trials_for)
+     is normalized to its real Biolink name (biolink:treats, biolink:in_clinical_trials_for) and
+     merged with the edges already using that name correctly -- for "treats" the doubled form
+     outnumbers the well-formed one roughly 180 to 1 in KG2c 2.10.1, so dropping it outright
+     would have discarded almost all of that relationship. A doubled predicate with no real
+     Biolink name even after normalization (biolink:biolink_mentioned_in_trials_for -> no
+     "mentioned in trials for" slot exists) is dropped, same as any other off-model predicate;
   2. edges that are not identifier-equivalence links (close_match, same_as, ...), because
      KG2c is already canonicalized and those links carry no biology;
   3. edges whose predicate is too generic to ever be informative (related_to and its two
@@ -63,8 +70,7 @@ from pathlib import Path
 import psutil
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-from biomedcat.weights import BiolinkModel, camel_curie
+import yaml
 
 logger = logging.getLogger("build_kg2c_parquet")
 
@@ -94,6 +100,24 @@ EDGE_CHUNK_ROWS = 1_000_000
 NODE_CHUNK_ROWS = 500_000
 LOG_EVERY_LINES = 2_000_000
 
+# RTX-KG2c stores some edges under a predicate with a redundant "biolink_" prefix doubled on top
+# of the "biolink:" namespace (e.g. "biolink:biolink_treats" instead of "biolink:treats"). This
+# is not a rare fluke: for "treats" in KG2c 2.10.1 the doubled form has ~180x the edges of the
+# well-formed one (3558 vs 19), so dropping it as "not in the Biolink model" would discard almost
+# all of that relationship instead of just a formatting glitch.
+DOUBLED_PREFIX = "biolink:biolink_"
+
+
+def normalize_predicate(pred: str) -> str:
+    """Strip RTX-KG2c's redundant doubled "biolink_" prefix, if present.
+
+    The result is then checked like any other predicate against --biolink-yaml: when the real
+    name is a genuine Biolink slot (treats, in_clinical_trials_for), the edge is kept and merges
+    with the edges already using that name; when it is not (mentioned_in_trials_for has no such
+    slot), it is dropped like any other off-model predicate, no better off for being normalized.
+    """
+    return "biolink:" + pred[len(DOUBLED_PREFIX):] if pred.startswith(DOUBLED_PREFIX) else pred
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -106,12 +130,44 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated primary_knowledge_source values to drop (default: infores:semmeddb).",
     )
     parser.add_argument(
-        "--strata", default="data/biolink_strata.json",
-        help="Derived Biolink model (scripts/build_biolink_strata.py), used to keep only predicates and "
-             "categories that are actually part of that Biolink version (default: data/biolink_strata.json).",
+        "--biolink-yaml", default="data/biolink-model.yaml",
+        help="Biolink model YAML, read directly (not the derived data/biolink_strata.json, which only "
+             "covers a subset relevant to BiomedCAT's reading strata): keeps only predicates and "
+             "categories that are one of its classes or slots (default: data/biolink-model.yaml).",
     )
     parser.add_argument("--kg-version", default="kg2c-2.10.1-v1.0", help="Label stored in stats.json.")
+    parser.add_argument(
+        "--drop-concept-gene-prefixes", default="UMLS,NCIT,MESH",
+        help="Nodes typed biolink:Gene or biolink:Protein whose CURIE prefix is one of these terminologies are "
+             "concepts ('Genes, Regulator', 'Rpl18 protein, rat'), not identities: they and their edges are dropped "
+             "(default: UMLS,NCIT,MESH; empty string to keep them).",
+    )
     return parser.parse_args()
+
+
+CONCEPT_GENE_CATEGORIES = ("biolink:Gene", "biolink:Protein")
+
+
+def prepass_concept_gene_nodes(nodes_path: str, prefixes: set[str], process: psutil.Process) -> set[str]:
+    """Stream the node dump once before the edge pass and return the ids of Gene/Protein nodes whose
+    CURIE prefix is a terminology (UMLS, NCIT, MESH). The edge pass drops every edge touching them, so
+    they never enter the graph as hubs of the Gene/Protein categories (10 Sept 2026 finding)."""
+    ids: set[str] = set()
+    n = 0
+    t0 = time.perf_counter()
+    with open_text(nodes_path) as f:
+        for line in f:
+            n += 1
+            line = line.strip()
+            if not line:
+                continue
+            node = json.loads(line)
+            node_id = node.get("id", "")
+            if node.get("category", "") in CONCEPT_GENE_CATEGORIES and node_id.split(":", 1)[0] in prefixes:
+                ids.add(node_id)
+    logger.info("concept-gene pre-pass: %d node(s) read, %d Gene/Protein concept node(s) to drop (%s), %.0f s",
+                n, len(ids), ",".join(sorted(prefixes)), time.perf_counter() - t0)
+    return ids
 
 
 def open_text(path: str):
@@ -140,20 +196,30 @@ def peak_rss_gb(process: psutil.Process) -> float | None:
         return None
 
 
-def load_biolink_model_terms(strata_path: str) -> tuple[set[str], set[str], str]:
-    """(valid predicate CURIEs, valid category CURIEs, Biolink version) from the derived strata file.
+def _class_curie(name: str) -> str:
+    """'small molecule' -> 'biolink:SmallMolecule': the category form stored in RTX-KG2c nodes."""
+    return "biolink:" + "".join(w[:1].upper() + w[1:] for w in name.split())
 
-    A predicate is valid when it is a real Biolink slot: a `kg2c_only` entry (present in some
-    earlier KG2c build but absent from biolink-model.yaml, e.g. the doubled-prefix
-    biolink:biolink_treats -- see scripts/build_biolink_strata.py) does not count. A category is
-    valid when it names an entity class *or* a mixin: RTX-KG2c uses some mixins (e.g.
-    biolink:GenomicEntity) as a node's primary category, even though biomedcat.weights keeps
-    mixins out of the entity-branch scheme used to derive profile weights.
+
+def _slot_curie(name: str) -> str:
+    """'related to' -> 'biolink:related_to': the predicate form stored in RTX-KG2c edges."""
+    return "biolink:" + name.strip().replace(" ", "_")
+
+
+def load_biolink_model_terms(yaml_path: str) -> tuple[set[str], set[str], str]:
+    """(valid predicate CURIEs, valid category CURIEs, Biolink version), read directly from
+    biolink-model.yaml -- deliberately *not* from the derived data/biolink_strata.json, whose
+    `classes` keeps only the entity classes reachable from "named thing" (336 -> 158 in Biolink
+    4.4.4, mixins tracked separately) and whose `predicates` keeps only the slots descending from
+    "related to" (553 slots -> 251), because that file exists to compute BiomedCAT's reading
+    strata (biochemical / clinical), not to answer "is this term part of Biolink at all": every
+    class or slot the raw YAML defines is valid here, mixins and non-association slots included,
+    with no extra filtering.
     """
-    model = BiolinkModel.load(strata_path)
-    valid_predicates = {info["curie"] for info in model.predicates.values() if not info.get("kg2c_only")}
-    valid_categories = {camel_curie(name) for name in model.classes} | {camel_curie(name) for name in model.mixins}
-    return valid_predicates, valid_categories, model.version
+    model = yaml.safe_load(open(yaml_path, encoding="utf-8"))
+    valid_categories = {_class_curie(name) for name in model["classes"]}
+    valid_predicates = {_slot_curie(name) for name in model["slots"]}
+    return valid_predicates, valid_categories, str(model.get("version", ""))
 
 
 # ----------------------------------------------------------------------------------------
@@ -220,7 +286,7 @@ class EdgeWriter:
 
 
 def pass_edges(edges_path: str, out_dir: Path, excluded_sources: set[str], valid_predicates: set[str],
-               process: psutil.Process) -> tuple[set[str], dict]:
+               process: psutil.Process, excluded_nodes: set[str] | None = None) -> tuple[set[str], dict]:
     """Stream the edge dump once; write every structurally-kept edge; return the kept node ids.
 
     Predicate codes are assigned on the fly, in first-seen order: unlike the old profile-driven
@@ -235,6 +301,7 @@ def pass_edges(edges_path: str, out_dir: Path, excluded_sources: set[str], valid
     pred_kept = Counter()
     source_dropped = Counter()
     kl_kept = Counter()
+    pred_normalized = Counter()   # original doubled-prefix string -> count seen (diagnostic only)
 
     writer = EdgeWriter(out_dir / "edges.parquet")
     t0 = time.perf_counter()
@@ -251,7 +318,10 @@ def pass_edges(edges_path: str, out_dir: Path, excluded_sources: set[str], valid
             if not line:
                 continue
             edge = json.loads(line)
-            pred = edge.get("predicate", "")
+            pred_raw = edge.get("predicate", "")
+            pred = normalize_predicate(pred_raw)
+            if pred != pred_raw:
+                pred_normalized[pred_raw] += 1
             pred_total[pred] += 1
 
             # Filter order matters only for the "reason" accounting; all filters are ANDed.
@@ -268,6 +338,9 @@ def pass_edges(edges_path: str, out_dir: Path, excluded_sources: set[str], valid
             if source in excluded_sources:
                 dropped_reason["excluded_source"] += 1
                 source_dropped[source] += 1
+                continue
+            if excluded_nodes and (edge.get("subject") in excluded_nodes or edge.get("object") in excluded_nodes):
+                dropped_reason["concept_gene_node"] += 1
                 continue
 
             s = edge["subject"]
@@ -310,6 +383,7 @@ def pass_edges(edges_path: str, out_dir: Path, excluded_sources: set[str], valid
         "edges_kept_by_predicate": dict(pred_kept.most_common()),
         "edges_total_by_predicate": dict(pred_total.most_common()),
         "edges_kept_by_knowledge_level": dict(kl_kept.most_common()),
+        "predicates_normalized_from_doubled_prefix": dict(pred_normalized.most_common()),
         "edge_pass_seconds": round(elapsed, 1),
     }
     return kept_nodes, stats
@@ -535,17 +609,21 @@ def main() -> int:
     process = psutil.Process(os.getpid())
     t0 = time.perf_counter()
 
-    if not Path(args.strata).is_file():
-        logger.error("%s not found: run scripts/build_biolink_strata.py first (it derives this file from "
-                     "data/biolink-model.yaml), so the build can be aligned to the Biolink model.", args.strata)
+    if not Path(args.biolink_yaml).is_file():
+        logger.error("%s not found: this is the Biolink model YAML itself (not the derived "
+                     "data/biolink_strata.json), needed to align the build to Biolink.", args.biolink_yaml)
         return 1
-    valid_predicates, valid_categories, biolink_version = load_biolink_model_terms(args.strata)
+    valid_predicates, valid_categories, biolink_version = load_biolink_model_terms(args.biolink_yaml)
     logger.info("aligned to Biolink %s: %d valid predicate(s), %d valid categor(y/ies)",
                 biolink_version, len(valid_predicates), len(valid_categories))
 
     excluded_sources = {s.strip() for s in args.exclude_sources.split(",") if s.strip()}
 
-    kept_nodes, edge_stats = pass_edges(args.edges, out_dir, excluded_sources, valid_predicates, process)
+    concept_prefixes = {p.strip() for p in args.drop_concept_gene_prefixes.split(",") if p.strip()}
+    excluded_nodes = prepass_concept_gene_nodes(args.nodes, concept_prefixes, process) if concept_prefixes else set()
+    kept_nodes, edge_stats = pass_edges(args.edges, out_dir, excluded_sources, valid_predicates, process, excluded_nodes)
+    edge_stats["concept_gene_nodes_dropped"] = {"prefixes": sorted(concept_prefixes), "n_nodes": len(excluded_nodes)}
+    del excluded_nodes
     node_stats = pass_nodes(args.nodes, out_dir, kept_nodes, valid_categories, process)
     del kept_nodes
 

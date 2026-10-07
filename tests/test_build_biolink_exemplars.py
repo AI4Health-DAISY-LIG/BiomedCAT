@@ -16,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from build_biolink_exemplars import _classify_form, _is_usable, _sample_class  # noqa: E402
+from build_biolink_exemplars import _classify_form, _is_usable, _sample_class, _weighted_order  # noqa: E402
 
 
 class TestIsUsable:
@@ -49,6 +49,29 @@ class TestClassifyForm:
 
     def test_short_lowercase_phrase_is_variant(self):
         assert _classify_form("Alzheimers", is_canonical=False) == "variant"
+
+
+class TestWeightedOrder:
+    def test_keeps_all_ids_no_loss(self):
+        ids = [f"n{i}" for i in range(50)]
+        degree = {f"n{i}": i for i in range(50)}
+        out = _weighted_order(ids, degree, random.Random(0))
+        assert sorted(out) == sorted(ids)
+
+    def test_high_degree_favored_on_average(self):
+        # 'hub' has clearly higher degree than 'leaf': across many trials hub should rank first
+        # far more often than chance, but leaf must still be able to lead sometimes (no exclusion).
+        ids = ["hub", "leaf"]
+        degree = {"hub": 200, "leaf": 1}
+        hub_first = sum(1 for seed in range(500) if _weighted_order(ids, degree, random.Random(seed))[0] == "hub")
+        assert hub_first > 375  # much better than the 50/50 a uniform shuffle would give
+        assert hub_first < 500  # never fully excludes the less-connected node from a chance at leading
+
+    def test_missing_degree_defaults_to_zero_weight_one(self):
+        # Nodes absent from the degree map (e.g. isolated in edges.parquet) still get a
+        # baseline weight of 1, not an error or a zero-probability exclusion.
+        out = _weighted_order(["a", "b"], {}, random.Random(0))
+        assert sorted(out) == ["a", "b"]
 
 
 class TestSampleClass:
@@ -100,6 +123,14 @@ class TestSampleClass:
         rows = _sample_class("disease", {"depth": 4, "parent": "disease or phenotypic feature"},
                               nodes, details, target=2, max_synonyms_per_node=2, rng=random.Random(0))
         assert len(rows) == 2
+
+    def test_accepts_degree_weighting_without_error(self):
+        nodes, details = self._frames()
+        degree = {"MONDO:1": 500, "MONDO:3": 1}
+        rows = _sample_class("disease", {"depth": 4, "parent": "disease or phenotypic feature"},
+                              nodes, details, target=10, max_synonyms_per_node=2,
+                              rng=random.Random(0), degree=degree)
+        assert len(rows) > 0
 
     def test_no_node_id_leaks_into_output_rows(self):
         nodes, details = self._frames()

@@ -1,0 +1,12 @@
+.venv/
+data/
+Dataset/
+Output/
+output/
+archive/
+frontend/
+docs/
+.git/
+**/__pycache__/
+.claude/
+.env

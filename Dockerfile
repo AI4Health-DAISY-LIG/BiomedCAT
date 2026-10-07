@@ -1,49 +1,45 @@
-# Use a lightweight Python image
+# BiomedCAT local console (biomedcat.webapp) for end users.
+# The language and vision models are served by Ollama in a separate container (see docker-compose.yml).
 FROM python:3.12-slim
 
-# Prevent Python from writing .pyc files and enable unbuffered logging
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
 
-# Install system dependencies required for document processing
+# poppler-utils: pdfinfo/pdftoppm used to rasterise the slide decks
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice \
-    poppler-utils \
-    libgl1 \
-    libglib2.0-0 \
-    libomp-dev \
-    python3-dev \
-    unzip \
-    curl \
-    && apt-get clean \
+        poppler-utils \
+        libgl1 \
+        libglib2.0-0 \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install 'uv' for ultra-fast Python dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Install Python dependencies
-# Added langchain-core, spacy and scispacy for NER and Normalization stages
-# The scispaCy model is installed via the official S3 release URL to ensure stability
-RUN uv pip install --system \
-    httpx \
-    pyd  \
-    pydantic-settings \
-    pydantic \
-    pillow \
-    pdf2image \
-    spacy \
-    scispacy
+# Dependencies first, so that code changes do not reinstall them
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Télécharger le modèle scispaCy
-RUN python -m spacy download en_core_sci_sm
+COPY biomedcat ./biomedcat
+COPY scripts ./scripts
+RUN uv sync --frozen --no-dev
 
-# Copy the application source code
-COPY ./biomedcat /app/biomedcat
+# Published configuration of the article (dense + exemplar retrieval legs, ReAct agent, union gate)
+ENV AGENT_MODE=react \
+    SCISPACY=0 \
+    RAG_BM25=0 \
+    RAG_LEXICAL_WEIGHT=0 \
+    RAG_KG2C_LEXICAL=0 \
+    RAG_KG2C_LEXICAL_WEIGHT=0 \
+    OLLAMA_KEEP_ALIVE=0 \
+    OLLAMA_URL=http://ollama:11434 \
+    BIOMEDCAT_HOST=0.0.0.0 \
+    BIOMEDCAT_PORT=8765 \
+    BIOMEDCAT_NO_BROWSER=1
 
-# Creation of data folders for volume mounting
-RUN mkdir -p /app/data/Dataset /app/data/Output
+EXPOSE 8765
 
-# Default command (will be overridden by docker-compose)
-CMD ["python", "-m", "biomedcat.pipeline"]
+CMD ["uv", "run", "--no-sync", "python", "-m", "biomedcat.webapp"]

@@ -42,6 +42,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
 
@@ -92,6 +93,45 @@ def _load_classes(path: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+def compute_degree(kg2c_dir: Path, node_ids: set[str] | None = None) -> dict[str, int]:
+    """Edge count (subject + object) per KG2c node id, via DuckDB directly on edges.parquet.
+
+    Used as a proxy for "well known" when --weight-by-degree is set: a uniform draw over a
+    category's nodes reflects KG2c's raw composition (dominated by rare-disease/long-tail
+    sources for some categories), which can bury common concepts under obscure ones. Degree
+    does not mean clinical importance, but a highly-connected node is at least unlikely to be
+    an obscure singleton, which is the failure mode this flag targets.
+    """
+    con = duckdb.connect()
+    df = con.execute(f"""
+        SELECT node, COUNT(*) AS degree FROM (
+            SELECT subject AS node FROM read_parquet('{(kg2c_dir / 'edges.parquet').as_posix()}')
+            UNION ALL
+            SELECT object AS node FROM read_parquet('{(kg2c_dir / 'edges.parquet').as_posix()}')
+        ) GROUP BY node
+    """).df()
+    if node_ids is not None:
+        df = df[df["node"].isin(node_ids)]
+    return dict(zip(df["node"], df["degree"]))
+
+
+def _weighted_order(ids: list[str], degree: dict[str, int], rng: random.Random) -> list[str]:
+    """Order `ids` by decreasing "weighted random key" (A-Res algorithm): a weighted sample
+    without replacement, expressed as a plain ordering so the rest of the sampling logic
+    (dedup, target cap, synonym fill) does not need to change based on --weight-by-degree.
+    """
+    # Undamped: with tens of thousands of low-degree competitors per category, a sqrt or log
+    # damping compresses too many keys toward 1 regardless of weight and the well-connected
+    # nodes stop standing out (checked empirically — see PR/commit notes). Plain 1+degree is
+    # what actually surfaces recognizable hub concepts (e.g. "type 2 diabetes mellitus",
+    # "Alzheimer disease") without over-concentrating on the handful of ultra-generic ones
+    # ("disorder", "cancer" alone) that a squared weight pulls in.
+    weight = lambda node_id: 1.0 + degree.get(node_id, 0)
+    keyed = [(rng.random() ** (1.0 / weight(node_id)), node_id) for node_id in ids]
+    keyed.sort(key=lambda kv: kv[0], reverse=True)
+    return [node_id for _, node_id in keyed]
+
+
 def _sample_class(
     class_name: str,
     class_info: dict[str, Any],
@@ -100,6 +140,7 @@ def _sample_class(
     target: int,
     max_synonyms_per_node: int,
     rng: random.Random,
+    degree: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Draw up to `target` real exemplars (names + synonyms) for one Biolink class."""
     category = camel_curie(class_name)
@@ -109,9 +150,14 @@ def _sample_class(
         return []
 
     # Stratified draw: one canonical name per sampled node, so the sample spans distinct
-    # concepts of the category rather than clustering on nodes with many synonyms.
+    # concepts of the category rather than clustering on nodes with many synonyms. Plain
+    # shuffle by default (uniform); with `degree`, better-connected nodes are favored (see
+    # _weighted_order) without ever fully excluding long-tail ones.
     ids = pool["id"].tolist()
-    rng.shuffle(ids)
+    if degree is not None:
+        ids = _weighted_order(ids, degree, rng)
+    else:
+        rng.shuffle(ids)
     seen_casefold: set[str] = set()
     rows: list[dict[str, Any]] = []
     id_to_name = dict(zip(pool["id"], pool["name"]))
@@ -167,6 +213,8 @@ def main() -> int:
     parser.add_argument("--target-per-class", type=int, default=30)
     parser.add_argument("--min-per-class", type=int, default=8, help="Below this, the class is reported as under-covered.")
     parser.add_argument("--max-synonyms-per-node", type=int, default=2)
+    parser.add_argument("--weight-by-degree", action="store_true",
+                         help="Bias the draw toward better-connected KG2c nodes (raw edge count as weight) instead of uniform sampling.")
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument("--dry-run", action="store_true", help="Print the report without writing the output file.")
     args = parser.parse_args()
@@ -182,6 +230,13 @@ def main() -> int:
     node_details = pq.read_table(details_path, columns=["id", "synonyms"]).to_pandas() if details_path.is_file() else None
     present_categories = set(nodes["category"].unique())
 
+    degree = None
+    if args.weight_by_degree:
+        matched_categories = {camel_curie(c) for c in classes} & present_categories
+        node_ids = set(nodes.loc[nodes["category"].isin(matched_categories), "id"])
+        logger.info("[*] Computing node degree from edges.parquet for %d candidate nodes...", len(node_ids))
+        degree = compute_degree(kg2c_dir, node_ids)
+
     rng = random.Random(args.seed)
     all_rows: list[dict[str, Any]] = []
     matched, under_covered, unmatched = [], [], []
@@ -192,7 +247,7 @@ def main() -> int:
             unmatched.append(class_name)
             continue
         rows = _sample_class(class_name, info, nodes, node_details, args.target_per_class,
-                              args.max_synonyms_per_node, random.Random(rng.random()))
+                              args.max_synonyms_per_node, random.Random(rng.random()), degree=degree)
         if not rows:
             unmatched.append(class_name)
             continue

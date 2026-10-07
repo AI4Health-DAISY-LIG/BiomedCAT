@@ -291,20 +291,34 @@ def score(gold_path: Path, result_path: Path | None, adversarial_path: Path | No
 
         n_gold = len(gold["positives"])
         n_found = partial_found
+        linkable_ids = {g["id"] for g in gold["positives"] if g.get("linkable", True)}
+        n_found_linkable = sum(1 for r in rows if r.get("match") != "missed" and r["id"] in linkable_ids)
+        link_clique_linkable = sum(1 for r in rows if r["id"] in linkable_ids and (r.get("curie_same_clique") or r.get("curie_exact")))
         gold_terms = {norm_text(g["term"]) for g in gold["positives"]}
         tp_mentions = sum(1 for x in extracted if any(partial_match(t, x["text"]) for t in gold_terms))
+        # Description-mode reading repeats a concept across several numbered statements, so the
+        # same (text, page) mention can be extracted many times; precision is also reported on
+        # distinct (text, page) mentions so that one repeated off-gold phrase cannot swing it.
+        distinct = {(norm_text(x["text"]), x.get("page")) for x in extracted}
+        tp_distinct = sum(1 for t_, _ in distinct if any(partial_match(t, t_) for t in gold_terms))
         metrics["positives"] = {
             "n_gold": n_gold,
             "n_extracted": len(extracted),
             "recall_exact": round(exact_found / n_gold, 3),
             "recall_partial": round(partial_found / n_gold, 3),
             "precision_mentions": round(tp_mentions / len(extracted), 3) if extracted else None,
+            "n_extracted_distinct": len(distinct),
+            "precision_mentions_distinct": round(tp_distinct / len(distinct), 3) if distinct else None,
             "typing_accuracy_on_found": round(type_ok / n_typed_gold, 3) if n_typed_gold else None,
             "n_found_with_gold_class": n_typed_gold,
             "mean_hierarchical_distance": round(sum(distances) / len(distances), 2) if distances else None,
             "linking_accuracy_exact_on_found": round(link_exact / n_found, 3) if n_found else None,
             "linking_accuracy_canonical_on_found": round(link_canon / n_found, 3) if n_found else None,
             "linking_accuracy_nodenorm_clique_on_found": round(link_clique / n_found, 3) if n_found else None,
+            # Gold v2 marks terms with no identifier in KG2c / NodeNorm as non-linkable: linking is
+            # also reported over found AND linkable terms, the only denominator a linker can reach.
+            "n_found_linkable": n_found_linkable,
+            "linking_accuracy_nodenorm_clique_on_found_linkable": round(link_clique_linkable / n_found_linkable, 3) if n_found_linkable else None,
             "gold_curies_unknown_to_nodenorm": [g["curie"] for g in gold["positives"] if not clique.get(g["curie"])],
             "rows": rows,
         }
@@ -318,11 +332,14 @@ def score(gold_path: Path, result_path: Path | None, adversarial_path: Path | No
             f"| Extracted mentions | {len(extracted)} |",
             f"| Term recall, exact / partial | {p['recall_exact']} / {p['recall_partial']} |",
             f"| Mention precision (gold assumed exhaustive) | {p['precision_mentions']} |",
+            f"| Distinct (text, page) mentions | {p['n_extracted_distinct']} |",
+            f"| Mention precision on distinct mentions (gold assumed exhaustive) | {p['precision_mentions_distinct']} |",
             f"| Typing accuracy on found terms | {p['typing_accuracy_on_found']} |",
             f"| Mean hierarchical distance (found terms) | {p['mean_hierarchical_distance']} |",
             f"| Linking accuracy, exact CURIE | {p['linking_accuracy_exact_on_found']} |",
             f"| Linking accuracy, canonical KG2c id | {p['linking_accuracy_canonical_on_found']} |",
             f"| Linking accuracy, same Node Normalizer clique | {p['linking_accuracy_nodenorm_clique_on_found']} |",
+            f"| Linking accuracy, same clique, linkable terms only | {p['linking_accuracy_nodenorm_clique_on_found_linkable']} ({p['n_found_linkable']} found linkable) |",
             f"| Gold CURIEs unknown to Node Normalizer | {len(p['gold_curies_unknown_to_nodenorm'])} |",
             "",
             "| ID | term | match | gold class | pred class | dist | gold CURIE | pred CURIE | same clique |",

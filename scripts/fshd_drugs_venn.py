@@ -49,6 +49,8 @@ def main() -> int:
     parser.add_argument("--out", default=str(B.parent / "manuscripts/biomedcat_manuscript/figures"))
     args = parser.parse_args()
     rows = json.loads(Path(args.presence).read_text(encoding="utf-8"))
+    # Accept both the original drug table (key "drug") and graph_presence.py output (key "label", kind "drug").
+    rows = [dict(r, drug=r.get("drug") or r.get("label")) for r in rows if r.get("kind", "drug") == "drug"]
     in_kg = [r for r in rows if r.get("kg2c_id")]
     absent = [r["drug"] for r in rows if not r.get("kg2c_id")]
     short = lambda r: r["drug"].split(" (")[0].split(" / ")[0]
