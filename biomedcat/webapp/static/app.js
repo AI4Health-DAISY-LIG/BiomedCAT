@@ -128,9 +128,12 @@
     $("#custom-name").value = "";
     $("#custom-base").value = "";
     $("#custom-dir").value = "on"; $("#custom-inv").value = "0.5";
+    $("#custom-focus").value = ""; updateFocusCount();
     $("#custom-builder").hidden = false;
     renderBranches();
   }
+
+  function updateFocusCount() { $("#custom-focus-count").textContent = $("#custom-focus").value.length; }
 
   function addCustom() {
     const err = $("#custom-error"); err.hidden = true;
@@ -138,7 +141,8 @@
     if (!Object.keys(weights).length) { err.hidden = false; err.textContent = "Give at least one branch a priority of 0.5 or 1."; return; }
     const name = $("#custom-name").value.trim() || `custom profile ${state.customs.length + 1}`;
     const inv = Math.min(1, Math.max(0, parseFloat($("#custom-inv").value) || 0));
-    state.customs.push({ name, branch_weights: weights, directionality: { mode: $("#custom-dir").value, inverse_factor: inv } });
+    const focus = $("#custom-focus").value.replace(/\s+/g, " ").trim().slice(0, $("#custom-focus").maxLength);
+    state.customs.push({ name, branch_weights: weights, reading_focus: focus, directionality: { mode: $("#custom-dir").value, inverse_factor: inv } });
     $("#custom-builder").hidden = true;
     renderCustoms();
     updateEstimate();
@@ -157,7 +161,7 @@
       const div = document.createElement("div");
       div.className = "custom-item";
       div.innerHTML = `<span><strong>${esc(c.name)}</strong> <span class="muted small">directionality ${esc(c.directionality.mode)}${c.directionality.mode === "on" ? " (reverse ×" + c.directionality.inverse_factor + ")" : ""}</span><br>
-        <span class="small">1: ${esc(primary.join(", ") || "–")}${secondary.length ? " · 0.5: " + esc(secondary.join(", ")) : ""}</span></span>
+        <span class="small">1: ${esc(primary.join(", ") || "–")}${secondary.length ? " · 0.5: " + esc(secondary.join(", ")) : ""}</span>${c.reading_focus ? `<br><span class="small muted">reading focus: ${esc(c.reading_focus)}</span>` : ""}</span>
         <button class="link" data-i="${i}">remove</button>`;
       box.appendChild(div);
     });
@@ -475,6 +479,7 @@
   $("#custom-cancel").addEventListener("click", () => { $("#custom-builder").hidden = true; });
   $("#custom-add").addEventListener("click", addCustom);
   $("#custom-base").addEventListener("change", applyBase);
+  $("#custom-focus").addEventListener("input", updateFocusCount);
   $("#custom-dir").addEventListener("change", () => { $("#custom-inv-label").hidden = $("#custom-dir").value !== "on"; });
   loadStatus(); loadProfiles(); refresh();
   setInterval(refresh, 3000);

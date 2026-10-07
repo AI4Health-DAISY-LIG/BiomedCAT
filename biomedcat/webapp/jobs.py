@@ -33,6 +33,7 @@ PROFILES_DIR = Path(ROOT_PATH) / "data" / "profiles"
 # data/profiles/legacy and are not listed).
 EXCLUDED_PROFILE_FILES = {"strata_config.json", "biochemical_actions_probs.json"}
 CUSTOM_PREFIX = "custom-"
+MAX_READING_FOCUS = 400   # characters; keep in sync with the textarea of the custom-profile builder
 
 # Default cost model until the console has seen jobs of its own (seconds).
 DEFAULT_SEC_PER_PAGE = 720.0      # OCR (~2 min) + NER agent + linking, per slide, on a 16 GB laptop
@@ -139,6 +140,8 @@ def normalise_custom_profile(spec: dict) -> dict:
         "description": str(spec.get("description") or "User-defined profile built in the console: entity-branch priorities "
                                                        "and directionality set by the user, weights derived automatically."),
         "branch_weights": weights,
+        # Free text appended to the slide-reading prompt (biomedcat.prompts); whitespace collapsed, length capped.
+        "reading_focus": " ".join(str(spec.get("reading_focus") or "").split())[:MAX_READING_FOCUS],
         "directionality": directionality_of(spec),
         "weighting": {"alpha": float((spec.get("weighting") or {}).get("alpha", 0.7)),
                       "scope_rule": str((spec.get("weighting") or {}).get("scope_rule", "max"))},

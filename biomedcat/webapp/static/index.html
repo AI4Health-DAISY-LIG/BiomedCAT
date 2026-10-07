@@ -56,6 +56,11 @@
             </label>
             <label id="custom-inv-label">Reverse factor <input id="custom-inv" type="number" min="0" max="1" step="0.1" value="0.5"></label>
           </div>
+          <label class="focus-field">Reading focus (optional)
+            <textarea id="custom-focus" rows="3" maxlength="400" placeholder="What should the reader look for on the slides?"></textarea>
+          </label>
+          <p class="hint"><span id="custom-focus-count">0</span> / 400 characters. Free text added to the instructions that describe each slide, to orient what is noticed and named. Keep it short and factual: no instructions about format.<br>
+            Example: <em>gene: genes whose expression or regulation changes in the disease; chemical entity: compounds tested as treatments, with their targets; phenotypic feature: cellular readouts shown in microscopy images.</em></p>
           <p class="hint">Priority per entity branch: <strong>1</strong> primary, <strong>0.5</strong> secondary, <strong>0</strong> out of scope (nodes of that family are neither expanded nor kept). Predicates are weighted from the branches they connect; changes of representation (gene / transcript / protein / drug target) always count 1.</p>
           <div id="custom-branches" class="branches"></div>
           <p><button type="button" class="primary" id="custom-add">Add this profile to the job</button> <button type="button" id="custom-cancel">Cancel</button></p>
@@ -65,7 +70,7 @@
       <fieldset>
         <legend>Options</legend>
         <label><input type="checkbox" id="opt-review"> Review the entity list before anything is sent to the resolvers (human in the loop; the job pauses after reading)</label>
-        <label><input type="checkbox" id="opt-offline"> Offline linking: no text leaves this computer (exact-name matching only, lower recall)</label>
+        <label><input type="checkbox" id="opt-offline"> Offline linking: no text leaves this computer (exact-name matching only, lower recall; the existence gate keeps only its second-model check)</label>
         <label>Existence gate against invented entities
           <select id="opt-gate">
             <option value="union">name resolver + second model (default)</option>
