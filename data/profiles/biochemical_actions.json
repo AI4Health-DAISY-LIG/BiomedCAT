@@ -1,0 +1,48 @@
+{
+  "name": "biochemical actions",
+  "description": "Molecular-level mechanisms: binding, interaction, regulation, pathway participation. Entity branches of the biochemical stratum at priority 1 (genes and gene products, chemicals, molecular and cellular processes, anatomy and cells, phenotypes); predicate weights derived from the Biolink hierarchy (biomedcat.weights). Source and knowledge-level weights from BiomedCAT.",
+  "stratum": "biochemical",
+  "branch_weights": {
+    "biological process or activity": 1.0,
+    "coding sequence": 1.0,
+    "disease or phenotypic feature": 1.0,
+    "gene": 1.0,
+    "gene family": 1.0,
+    "genome": 1.0,
+    "genotype": 1.0,
+    "haplotype": 1.0,
+    "macromolecular complex": 1.0,
+    "nucleosome modification": 1.0,
+    "organismal entity": 1.0,
+    "polypeptide": 1.0,
+    "posttranslational modification": 1.0,
+    "protein domain": 1.0,
+    "protein family": 1.0,
+    "reagent targeted gene": 1.0,
+    "regulatory region": 1.0,
+    "sequence variant": 1.0,
+    "transcript": 1.0,
+    "chemical entity": 1.0,
+    "exposure event": 1.0
+  },
+  "directionality": {
+    "mode": "on",
+    "inverse_factor": 0.5
+  },
+  "weighting": {
+    "alpha": 0.7,
+    "scope_rule": "max",
+    "min_weight": 0.0
+  },
+  "sources": {
+    "infores:diseases": 0.2,
+    "infores:disgenet": 0.5,
+    "infores:intact": 0.3,
+    "infores:pathwhiz": 0.3,
+    "infores:hmdb": 0.3
+  },
+  "knowledge_levels": {
+    "prediction": 0.3
+  },
+  "prefix_restricted_predicates": {}
+}

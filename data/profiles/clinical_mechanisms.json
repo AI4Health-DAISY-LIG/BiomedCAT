@@ -1,0 +1,48 @@
+{
+  "name": "clinical mechanisms",
+  "description": "Organism and patient level: disease, phenotype, predisposition, treatment and trial evidence. Entity branches of the clinical stratum at priority 1 (diseases and phenotypes, clinical entities, organisms and anatomy, exposures, attributes, drugs); predicate weights derived from the Biolink hierarchy (biomedcat.weights).",
+  "stratum": "clinical",
+  "branch_weights": {
+    "activity": 1.0,
+    "attribute": 1.0,
+    "biological process or activity": 1.0,
+    "disease or phenotypic feature": 1.0,
+    "gene": 1.0,
+    "organismal entity": 1.0,
+    "polypeptide": 1.0,
+    "chemical entity": 1.0,
+    "clinical entity": 1.0,
+    "exposure event": 1.0,
+    "physical entity": 1.0
+  },
+  "directionality": {
+    "mode": "on",
+    "inverse_factor": 0.5
+  },
+  "weighting": {
+    "alpha": 0.7,
+    "scope_rule": "max",
+    "min_weight": 0.0
+  },
+  "sources": {
+    "infores:diseases": 0.2,
+    "infores:disgenet": 0.5,
+    "infores:intact": 0.3,
+    "infores:pathwhiz": 0.3,
+    "infores:hmdb": 0.3
+  },
+  "knowledge_levels": {
+    "prediction": 0.3
+  },
+  "prefix_restricted_predicates": {
+    "biolink:subclass_of": [
+      "MONDO:",
+      "HP:",
+      "DOID:",
+      "EFO:",
+      "Orphanet:",
+      "orphanet:",
+      "NCIT:"
+    ]
+  }
+}

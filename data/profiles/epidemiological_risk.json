@@ -1,0 +1,65 @@
+{
+  "name": "epidemiological risk",
+  "description": "Population and public-health angle: exposures, risk factors and disease occurrence across individuals and populations, with environmental and demographic context -- not the molecular detail of the mechanism (biochemical actions, genetic determinants) nor the single-patient course of care (clinical mechanisms). Entity branches of the epidemiological stratum at priority 1 (exposure event, organismal entity, disease or phenotypic feature, planetary entity, attribute, activity, study result); predicate weights derived from the Biolink hierarchy (biomedcat.weights).",
+  "branch_weights": {
+    "exposure event": 1.0,
+    "organismal entity": 1.0,
+    "disease or phenotypic feature": 1.0,
+    "planetary entity": 1.0,
+    "attribute": 1.0,
+    "activity": 1.0,
+    "study result": 1.0,
+    "gene": 0.5,
+    "chemical entity": 0.5,
+    "biological process or activity": 0.5,
+    "evidence type": 0.5,
+    "clinical entity": 0.5
+  },
+  "directionality": {
+    "mode": "on",
+    "inverse_factor": 0.5
+  },
+  "weighting": {
+    "alpha": 0.7,
+    "scope_rule": "max",
+    "min_weight": 0.0
+  },
+  "sources": {
+    "infores:diseases": 0.2,
+    "infores:disgenet": 0.5,
+    "infores:intact": 0.3,
+    "infores:pathwhiz": 0.3,
+    "infores:hmdb": 0.3
+  },
+  "knowledge_levels": {
+    "prediction": 0.3
+  },
+  "prefix_restricted_predicates": {
+    "biolink:subclass_of": [
+      "MONDO:",
+      "HP:",
+      "DOID:",
+      "EFO:",
+      "Orphanet:",
+      "orphanet:",
+      "NCIT:"
+    ]
+  },
+  "entity_scope": [
+    "exposure event",
+    "population of individual organisms",
+    "cohort",
+    "individual organism",
+    "disease",
+    "phenotypic feature",
+    "geographic location",
+    "environmental process",
+    "clinical attribute",
+    "clinical trial",
+    "study",
+    "gene",
+    "chemical entity",
+    "study result"
+  ],
+  "reading_focus": "disease: incidence, prevalence and population-level risk factors; gene: genetic susceptibility and heritability in the population, not the variant's molecular mechanism; chemical entity: environmental or occupational exposure; clinical entity: screening, uptake and health-service outcomes"
+}

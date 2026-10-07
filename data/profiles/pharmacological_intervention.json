@@ -1,0 +1,66 @@
+{
+  "name": "pharmacological intervention",
+  "description": "Drug-discovery and pharmacology angle: a chemical entity, the gene or protein it targets, its mechanism of action, and its clinical use -- not the hereditary cause of the disease (genetic determinants) nor the patient-level course of care (clinical mechanisms). Entity branches of the pharmacological stratum at priority 1 (chemical entity, gene, protein, macromolecular complex, disease or phenotypic feature, clinical entity, biological process or activity); predicate weights derived from the Biolink hierarchy (biomedcat.weights).",
+  "branch_weights": {
+    "chemical entity": 1.0,
+    "gene": 1.0,
+    "polypeptide": 1.0,
+    "macromolecular complex": 1.0,
+    "disease or phenotypic feature": 1.0,
+    "clinical entity": 1.0,
+    "biological process or activity": 1.0,
+    "organismal entity": 0.5,
+    "exposure event": 0.5,
+    "transcript": 0.5,
+    "reagent targeted gene": 0.5
+  },
+  "directionality": {
+    "mode": "on",
+    "inverse_factor": 0.5
+  },
+  "weighting": {
+    "alpha": 0.7,
+    "scope_rule": "max",
+    "min_weight": 0.0
+  },
+  "sources": {
+    "infores:diseases": 0.2,
+    "infores:disgenet": 0.5,
+    "infores:intact": 0.3,
+    "infores:pathwhiz": 0.3,
+    "infores:hmdb": 0.3
+  },
+  "knowledge_levels": {
+    "prediction": 0.3
+  },
+  "prefix_restricted_predicates": {
+    "biolink:subclass_of": [
+      "MONDO:",
+      "HP:",
+      "DOID:",
+      "EFO:",
+      "Orphanet:",
+      "orphanet:",
+      "NCIT:"
+    ]
+  },
+  "entity_scope": [
+    "chemical entity",
+    "drug",
+    "small molecule",
+    "gene",
+    "protein",
+    "macromolecular complex",
+    "disease",
+    "phenotypic feature",
+    "clinical intervention",
+    "treatment",
+    "clinical trial",
+    "biological process",
+    "molecular activity",
+    "pathway",
+    "anatomical entity",
+    "exposure event"
+  ],
+  "reading_focus": "gene: druggable target and the protein it expresses; protein: binding site and mechanism of action of the compound; disease: indication, contraindication and adverse effect; biological process: pathway modulated by the treatment, not its hereditary or clinical-course context"
+}
