@@ -8,7 +8,19 @@ __pycache__/
 .venv/
 
 # Data (not committed: large / possibly copyrighted slide material)
+# Exceptions: the shipped reading profiles and the retrieval exemplars, needed to run the console.
+data/*
+!data/profiles/
+data/profiles/*
+!data/profiles/*.json
+!data/biolink_exemplars.parquet
 Dataset/
+Output/
 
 # Pipeline output (contains full transcriptions of the slide material above)
-Output/
+output/
+.aider*
+
+# Archived intermediate runs and logs (see archive/MANIFEST.md)
+archive/
+.claude/

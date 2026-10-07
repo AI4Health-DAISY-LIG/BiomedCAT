@@ -6,12 +6,58 @@ orchestration logic in the stages. Each function returns a chat `messages` list 
 hand to runtime.generate. The module is torch-free: it formats the type vocabulary itself
 and takes the remaining dynamic pieces (candidate menu, verdict listing) as strings.
 """
+import json
 from biomedcat.types import Entity, TYPE_DEFINITIONS
+
+
+# --- OCR ---
+def ocr_description(entity_scope: list[str] | None = None, reading_focus: str = "") -> str:
+    """Slide-reading prompt (description mode).
+
+    The prompt itself is domain-neutral about what to name: the kinds of entities to list
+    exhaustively come from the active profile (`entity_scope`), and `reading_focus` is an
+    optional free-text addition from the same profile. Without a profile the model is only asked
+    to name every distinct component it sees.
+    """
+    if entity_scope:
+        recall = (
+            "Recall requirement: name explicitly every " + ", ".join(entity_scope) +
+            " that is written on the slide or implied by its figures; prefer naming a candidate entity over "
+            "omitting it, and keep symbols, loci and abbreviations exactly as written.\n    "
+        )
+    else:
+        recall = (
+            "Recall requirement: name explicitly every distinct entity written on the slide or implied by its "
+            "figures; prefer naming a candidate over omitting it, and keep symbols and abbreviations as written.\n    "
+        )
+    focus = (reading_focus.strip() + "\n    ") if reading_focus and reading_focus.strip() else ""
+    prompt = """Role Definition:
+    You are an esteemed Principal Investigator (PI) at a top-tier biomedical research institution.
+    Your expertise is in biomedical translational science.
+    Task Goal: Deconstruct the provided visual data as if you are preparing the executive summary for an international 
+    scientific symposium or writing the critical background of a major grant proposal (national or international). 
+    Your aim is to translate complex figures into a coherent narrative of current findings, unresolved questions, and core hypotheses.
+    Analysis Directives:
+    Comprehensiveness: Identify every distinct component within the visualization—including structural elements (e.g. chromosomes, RNA loops, small molecules), 
+    biochemical markers (e.g. proteins, metabolites), morphological features, and experimental conditions.
+    Visual Granularity: Provide exhaustive descriptive language for all visual evidence: specify colors, geometries, scales, specific annotations, 
+    relationships between components (e.g., 'A direct correlation is shown where...'), and differences between comparative data sets or images.
+    Do not focus on descripton of 'healthy', 'control', 'normal' cases.
+    Synthesize Concepts: Go beyond simple listing; describe the observed phenomena, hypothesize the underlying mechanisms linking structure to function, 
+    and articulate how different visual elements support or refute a scientific hypothesis. If multiple similar processes are depicted
+    (e.g., two alternative mechanisms of the same disease), systematically contrast their defining features.
+    """ + recall + focus + """Output Constraints:
+    Your output must be formatted as a numbered list of highly complex scientific statements/concepts.
+    Avoid conversational titles, introductory phrases, or summarizing sentences. Each entry must convey a singular, dense concept.
+    If any visual element's function is ambiguous, add [UNCLEAR] as a concept prefix."""
+
+    return prompt
+
 
 
 # --- NER Module 1: extract all candidate terms (recall-first, few-shot) ---
 _EXTRACTOR_SYSTEM = (
-    "You are a biomedical text analyst. "
+    "You are a biomedical ontologist and bioinformatician. "
     "Extract professional biomedical terms from the given text."
 )
 
@@ -21,11 +67,11 @@ def extraction_messages(sentence: str) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": _EXTRACTOR_SYSTEM},
         {"role": "user", "content": (
-            "Identify ALL biomedical professional terms and concepts mentioned in the text below.\n"
-            "Do NOT filter or judge them -- list every professional term to maximise recall.\n"
-            "Ensure that multi-word concepts (composite terms) are extracted as a single complete phrase.\n"
-            "Return ONLY a valid JSON array of strings, exactly as they appear in the text.\n\n"
-            "Text: The TP53 gene mutation is common in non-small cell lung cancer.\nTerms:"
+            "Identify ALL biomedical professional terms and concepts mentioned in the text below."
+            "Do NOT filter or judge them -- list every professional term to maximise recall."
+            "Ensure that multi-word concepts (composite terms) are extracted as a single complete phrase representing a concept."
+            "Return ONLY a valid JSON array of strings, exactly as they appear in the text."
+            "Text: The TP53 gene mutation is common in non-small cell lung cancer.Terms:"
         )},
         {"role": "assistant", "content": '["TP53 gene mutation", "non-small cell lung cancer"]'},
         {"role": "user", "content": f"Text: {sentence}\nTerms:"},
@@ -58,6 +104,42 @@ def classification_messages(term: str, sentence: str) -> list[dict[str, str]]:
         )},
     ]
 
+def classification_messages_biolink(term: str, sentence: str) -> list[dict[str, str]]:
+    """Explain a term in context, then assign it one entity type or NONE."""
+    global BIOLINK_TYPES_CACHE
+    if BIOLINK_TYPES_CACHE is None:
+        parts = []
+        try:
+            print("Loading Biolink:")
+            with open(DATA_FILE_PATH, "r", encoding="utf-8") as f: 
+                data = json.load(f)
+            for name, entry in data.items():
+                definition = entry.get("definition")
+                if definition:
+                    parts.append(f"{name} ({definition})")
+            BIOLINK_TYPES_CACHE = ", ".join(parts)
+            print("Loading Biolink: done.")
+        except Exception:
+            # Fallback to TYPE_DEFINITIONS if file loading fails
+            parts = [f"{n} ({g})" for n, g in TYPE_DEFINITIONS.items()]
+            BIOLINK_TYPES_CACHE = ", ".join(parts)
+
+    type_defs = BIOLINK_TYPES_CACHE
+
+    return [
+        {"role": "system", "content": _CLASSIFIER_SYSTEM},
+        {"role": "user", "content": (
+            f"Sentence: {sentence}\n\n"
+            f'Entity: "{term}"\n\n'
+            f'Step 1: Explain what "{term}" means in the context of this sentence.\n'
+            "Step 2: Based on that meaning, choose the SINGLE most relevant type, "
+            f"or NONE if it does not clearly belong to any of:\n{type_defs}.\n"
+            "Answer NONE for anything that is not itself a biomedical concept, such as "
+            "a person as a person's name, an author citation, a journal name, or a URL, or any personal information.\n"
+            "End your answer with a final line in exactly this form:\n"
+            "TYPE: <one type or NONE>"
+        )},
+    ]
 
 # --- NER Module 3: flag any type assignment that is wrong ---
 _VERIFIER_SYSTEM = "You are a strict biomedical annotation verifier."

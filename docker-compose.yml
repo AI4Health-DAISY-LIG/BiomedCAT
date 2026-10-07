@@ -1,0 +1,46 @@
+# BiomedCAT for end users: the local console and its model server.
+#
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull qwen2.5vl:3b        (and the three other models, see README)
+#   open http://localhost:8765
+#
+# The console port is bound to 127.0.0.1 only: documents never leave the machine through it.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: biomedcat_ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    # NVIDIA GPU (optional): uncomment, with the NVIDIA Container Toolkit installed on the host.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  biomedcat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biomedcat_console
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      # Fully local mode (no entity name sent to the Translator services): uncomment.
+      # - RESOLVERS_OFFLINE=1
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ./data:/app/data            # KG2c tables, profiles, Biolink index (see README)
+      - ./output:/app/output        # job results
+      - ./Dataset:/app/dataset      # uploaded documents
+      - hf_cache:/root/.cache/huggingface   # embedding model, downloaded once
+
+volumes:
+  ollama_models:
+  hf_cache:

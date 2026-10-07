@@ -1,80 +1,201 @@
-import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-import gc
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from huggingface_hub import login
+import logging
+import requests
+import time
 from biomedcat.config import settings
 
-torch.use_deterministic_algorithms(True, warn_only=True)
-torch.manual_seed(0)
+logger = logging.getLogger(__name__)
 
 
-def free_gpu() -> None:
-    """Release Python garbage, then return PyTorch's cached VRAM to the driver."""
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+def unload_models(*model_ids: str) -> None:
+    """Ask Ollama to unload the given models now (keep_alive 0 with no prompt).
 
-def hf_login() -> None:
-    """Authenticate to Hugging Face for the gated Llama repo (no-op if no token)."""
-    token = os.environ.get("HF_TOKEN") or settings.hf_token
-    if token:
-        login(token=token)
-
-def build_4bit_config() -> BitsAndBytesConfig:
-    """4-bit NF4 with double quantization: shrinks Llama-3.1-8B to ~5.7 GB for the 8 GB card."""
-    return BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
-
-def build_llm():
-    """Load the 4-bit NF4 Llama (tokenizer + model), shared by NER and normalization.
-
-    Handles auth and a pre-load VRAM clear, then loads quantized and in eval mode.
-    Returns (tokenizer, model).
+    Called at stage boundaries by the pipeline so that a model kept resident during its stage
+    (settings.ollama_keep_alive) releases its memory before the next model loads. Unknown or
+    already-unloaded models are ignored; a server error is logged, never raised.
     """
-    hf_login()   # gated repo; no-op if no token
-    free_gpu()   # clear cached VRAM before the load
-    tokenizer = AutoTokenizer.from_pretrained(settings.llm_model_id)
-    model = AutoModelForCausalLM.from_pretrained(
-        settings.llm_model_id,
-        quantization_config=build_4bit_config(),
-        dtype=torch.bfloat16,
-        device_map="auto",
-    ).eval()
-    return tokenizer, model
+    url = f"{settings.ollama_url.rstrip('/')}/api/generate"
+    for model_id in dict.fromkeys(m for m in model_ids if m):
+        try:
+            requests.post(url, json={"model": model_id, "keep_alive": 0}, timeout=60)
+            logger.info("[Ollama] unloaded %s", model_id)
+        except requests.RequestException as e:
+            logger.warning("[Ollama] could not unload %s: %s", model_id, e)
 
-def generate(model, tokenizer, messages: list[dict[str, str]], max_new_tokens: int) -> str:
-    """Greedily decode a chat message list and return the generated text.
 
-    Greedy (do_sample=False) argmax decoding, deterministic in exact arithmetic.
-    Llama has no pad token, so EOS is reused for padding.
+def stage_models() -> tuple[str, ...]:
+    """Every Ollama model the pipeline may have loaded, for an unconditional release."""
+    return (settings.ocr_model_id, settings.classification_model_id, settings.sanitization_model_id,
+            settings.existence_model_id)
+
+
+def _sampling_options(temperature: float) -> dict:
+    """Temperature (and top-k / top-p when set) for one Ollama call: the caller's temperature unless
+    OLLAMA_TEMPERATURE overrides it globally (see config.py; used by the T=1 sampling experiments)."""
+    opts: dict = {"temperature": float(settings.ollama_temperature) if str(settings.ollama_temperature).strip() else temperature}
+    if str(settings.ollama_top_k).strip():
+        opts["top_k"] = int(settings.ollama_top_k)
+    if str(settings.ollama_top_p).strip():
+        opts["top_p"] = float(settings.ollama_top_p)
+    return opts
+
+
+def generate(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, temperature: float = 0.0,
+             think: bool | None = None, raw: bool = False) -> str:
     """
-    # Render chat turns into Llama's token format, on the model's device.
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
-    ).to(model.device)
-    input_len = inputs["input_ids"].shape[1]  # prompt length, to slice it off later
+    Sends a request to the Ollama API to generate a response.
 
-    # inference_mode: no autograd graph, lighter on VRAM.
-    with torch.inference_mode():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,                      # greedy
-            pad_token_id=tokenizer.eos_token_id,  # Llama has no pad token; reuse EOS
-        )
+    Args:
+        model_id: The identifier of the model to use.
+        messages: A list of message dictionaries (role and content).
+        max_new_tokens: Maximum number of tokens to predict.
+        temperature: Sampling temperature.
+        raw: Send the message contents as they are, without the "Role: " labels. The labels were
+            measured to change the greedy trajectory of gemma-4-e4b: on the 59 reference terms
+            where the two forms disagreed, the raw prompt gave 22 correct verdicts and the
+            labelled one 6 (18 Sept 2026). The decide mode of the typing agent uses raw prompts;
+            the ReAct loop, the judge and the existence gate keep the labelled form their
+            published numbers were measured with.
 
-    generated = output_ids[0, input_len:]  # keep only the new tokens
-    text = tokenizer.decode(generated, skip_special_tokens=True).strip()
-    del inputs, output_ids  # free GPU tensors promptly
-    return text
+    Returns:
+        The generated text response from the model, or an empty string if an error occurs.
+    """
+    if raw:
+        prompt = "\n".join(msg["content"] for msg in messages)
+    else:
+        prompt = ""
+        for msg in messages:
+            role = msg.get("role", "user").capitalize()
+            content = msg["content"]
+            prompt += f"{role}: {content}\n"
+        prompt = prompt.strip()
+
+    url = f"{settings.ollama_url.rstrip('/')}/api/generate"
+    payload = {
+        "model": model_id,
+        "prompt": prompt,
+        "stream": False,
+        # Resident for the stage (see config.ollama_keep_alive); released by unload_models().
+        "keep_alive": settings.ollama_keep_alive,
+        # Thinking models (gemma4) otherwise spend the whole num_predict budget on hidden
+        # reasoning and return an empty response; every BiomedCAT prompt is a direct answer.
+        # Hidden reasoning off by default (config.ollama_think); a caller may enable it for one
+        # call (second pass of the typing agent) and must then raise max_new_tokens accordingly.
+        "think": settings.ollama_think if think is None else think,
+        "options": {
+            "num_predict": max_new_tokens,
+            # Reproducibility: a fixed seed plus temperature 0 makes two runs of the same document
+            # comparable. Without it Ollama re-samples on ties and the run-to-run variance is real.
+            **({"seed": int(settings.ollama_seed)} if str(settings.ollama_seed).strip() else {}),
+            **_sampling_options(temperature),
+        }
+    }
+
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, json=payload, timeout=300)
+            response.raise_for_status()
+            data = response.json()
+            return data["response"].strip()
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return ""
+        except requests.exceptions.ConnectionError:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Connection error communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return ""
+        except requests.exceptions.HTTPError as e:
+            logger = logging.getLogger(__name__)
+            if e.response.status_code == 404:
+                logger.error(f"Model {model_id} not found on Ollama")
+            else:
+                logger.error(f"HTTP error communicating with Ollama API: {e}")
+            return ""
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Unexpected error communicating with Ollama API: {e}")
+            return ""
+    
+    return ""
+
+
+def chat(model_id: str, messages: list[dict[str, str]], max_new_tokens: int, temperature: float = 0.0) -> str:
+    """
+    Sends a request to the Ollama API to generate a response.
+
+    Args:
+        model_id: The identifier of the model to use.
+        messages: A list of message dictionaries (role and content).
+        max_new_tokens: Maximum number of tokens to predict.
+        temperature: Sampling temperature.
+
+    Returns:
+        The generated text response from the model, or an empty string if an error occurs.
+    """
+    url = f"{settings.ollama_url.rstrip('/')}/api/chat"
+    payload = {
+        "model": model_id,
+        "messages": messages,
+        "stream": False,
+        # Resident for the stage (see config.ollama_keep_alive); released by unload_models().
+        "keep_alive": settings.ollama_keep_alive,
+        # Thinking models (gemma4) otherwise spend the whole num_predict budget on hidden
+        # reasoning and return an empty response; every BiomedCAT prompt is a direct answer.
+        "think": settings.ollama_think,
+        "options": {
+            "num_predict": max_new_tokens,
+            # Reproducibility: a fixed seed plus temperature 0 makes two runs of the same document
+            # comparable. Without it Ollama re-samples on ties and the run-to-run variance is real.
+            **({"seed": int(settings.ollama_seed)} if str(settings.ollama_seed).strip() else {}),
+            **_sampling_options(temperature),
+        }
+    }
+
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, json=payload, timeout=300)
+            response.raise_for_status()
+            data = response.json()
+            return data["message"]["content"].strip()
+        except requests.exceptions.Timeout:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Timeout communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return ""
+        except requests.exceptions.ConnectionError:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Connection error communicating with Ollama API for model {model_id} (attempt {attempt + 1})")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            return ""
+        except requests.exceptions.HTTPError as e:
+            logger = logging.getLogger(__name__)
+            if e.response.status_code == 404:
+                logger.error(f"Model {model_id} not found on Ollama")
+            else:
+                logger.error(f"HTTP error communicating with Ollama API: {e}")
+            return ""
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Unexpected error communicating with Ollama API: {e}")
+            return ""
+    
+    return ""

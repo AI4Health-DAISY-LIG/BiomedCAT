@@ -1,25 +1,38 @@
 from dataclasses import dataclass
+from pathlib import Path
+import json
+from typing import Optional
+from biomedcat.stages.biolink_yml_processor import biolink_yml_processor
+
+
+# The flat Biolink class table lives in <repo root>/data, next to the ChromaDB index (see config.py).
+BASE_DIR = Path(__file__).parent.parent.absolute()
+BIOLINK_FILE_PATH = BASE_DIR / "data/biolink_classes_flat.json"
+
+if BIOLINK_FILE_PATH.is_file():
+    # checks if file exists
+    print ("Loading biolink info...")
+    with open(str(BIOLINK_FILE_PATH)) as json_data:
+        biolink_info_flat = json.load(json_data)
+else:
+    print ("Loading state of the art data model and computing local knowledge base...")
+    nested_result, biolink_info_flat = biolink_yml_processor()
+    print("biolink data model processing... done.")
 
 
 # The seven biomedical entity types an Entity.type can hold, and one gloss each.
 # Single source of truth shared by NER (typing), the prompts, and Norm (the judge),
 # so those never drift on what a type label means. Kept here (torch-free) rather than
 # in runtime, so any module can import the vocabulary without pulling in torch.
+# Legal verdict vocabulary: every Biolink entity class except deprecated ones (six taxa without
+# a definition, e.g. 'human', 'mammal') and abstract ones (structural nodes such as 'entity',
+# 'biological entity'), which stay in the tree for navigation but cannot be assigned.
 ENTITY_TYPES: list[str] = [
-    "GENE", "DISEASE", "CHEMICAL", "CELL_TYPE",
-    "ANATOMY", "CHROMOSOMAL_LOCUS", "EPIGENETIC_MODIFICATION",
+    k for k, v in biolink_info_flat.items()
+    if not v["metadata"].get("deprecated") and not v["metadata"].get("abstract")
 ]
 
-TYPE_DEFINITIONS: dict[str, str] = {
-    "GENE":                    "a gene or gene symbol",
-    "DISEASE":                 "a disease or disorder",
-    "CHEMICAL":                "a chemical, drug, or compound",
-    "CELL_TYPE":               "a type of cell",
-    "ANATOMY":                 "an anatomical structure, tissue, or organ",
-    "CHROMOSOMAL_LOCUS":       "a chromosomal location, locus, or genomic region",
-    "EPIGENETIC_MODIFICATION": "an epigenetic modification such as methylation",
-}
-
+TYPE_DEFINITIONS: dict[str, str] = {k:v["metadata"]["definition"] for k,v in biolink_info_flat.items()}
 
 @dataclass
 class Slide:
@@ -31,6 +44,8 @@ class Entity:
     text: str
     type: str
     segment: str
+    # 1-based slide/page the mention was found on; provenance for the context graph stage.
+    page: int | None = None
 
 @dataclass
 class Candidate:
@@ -39,10 +54,16 @@ class Candidate:
     biolink_type: str | None
     rank: int
     source: str
+    # Canonical RTX-KG2c id for this CURIE (from the offline equivalents table), None if unknown.
+    kg2c_id: str | None = None
 
 @dataclass
 class NormalizedEntity(Entity):
     curie: str | None = None
+    # Canonical RTX-KG2c id of the chosen CURIE; this is the seed used by the context-graph stage.
+    kg2c_id: str | None = None
+    # Human-readable label of the chosen candidate, kept for the report and the exports.
+    label: str | None = None
 
 @dataclass
 class PipelineResult:
@@ -50,3 +71,5 @@ class PipelineResult:
     ocr: list[Slide]
     ner: list[Entity]
     norm: list[NormalizedEntity]
+    # Summary of the context-graph stage (ContextGraphResult as a dict), None when skipped.
+    context_graph: Optional[dict] = None

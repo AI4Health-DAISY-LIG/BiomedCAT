@@ -1,0 +1,89 @@
+{
+  "description": "Human-defined part of the strata: for each granularity stratum, the Biolink classes and mixins that anchor it, and the angle under which classes shared with other strata are read. Everything else (class membership, vertical is_a links, mixin groupings, predicate links between classes) is derived from biolink-model.yaml by scripts/build_biolink_strata.py.",
+  "strata": {
+    "biochemical": {
+      "description": "Molecular and cellular level: genes and gene products, small molecules and metabolites, molecular activities, pathways, cellular components, cellular phenotypes, and tissue specificity of molecular events.",
+      "anchor_classes": [
+        "chemical entity",
+        "molecular entity",
+        "gene",
+        "protein",
+        "transcript",
+        "polypeptide",
+        "nucleic acid entity",
+        "sequence variant",
+        "macromolecular complex",
+        "molecular activity",
+        "biological process",
+        "pathway",
+        "cellular component",
+        "cell",
+        "cell line",
+        "small molecule",
+        "molecular mixture",
+        "chemical mixture",
+        "drug",
+        "phenotypic feature",
+        "anatomical entity",
+        "gross anatomical structure",
+        "RNA product",
+        "microRNA",
+        "protein isoform",
+        "protein family",
+        "gene family",
+        "protein domain"
+      ],
+      "anchor_mixins": [
+        "gene or gene product",
+        "chemical entity or gene or gene product",
+        "genomic entity",
+        "macromolecular machine mixin"
+      ],
+      "shared_angle": {
+        "disease": "causal genes, molecular mechanisms and molecular consequences of the disease",
+        "phenotypic feature": "molecular and cellular phenotypes and readouts",
+        "anatomical entity": "tissue and cell-type specificity of molecular events",
+        "physiological process": "molecular basis of the process"
+      }
+    },
+    "clinical": {
+      "description": "Organism and patient level: diseases and phenotypes, clinical findings, treatments, trials and adverse effects, anatomy, physiology, behaviour, cohorts.",
+      "anchor_classes": [
+        "disease or phenotypic feature",
+        "disease",
+        "phenotypic feature",
+        "clinical entity",
+        "clinical finding",
+        "clinical intervention",
+        "treatment",
+        "clinical trial",
+        "drug",
+        "organismal entity",
+        "anatomical entity",
+        "gross anatomical structure",
+        "physiological process",
+        "pathological process",
+        "behavior",
+        "cohort",
+        "individual organism",
+        "population of individual organisms",
+        "clinical attribute",
+        "exposure event"
+      ],
+      "anchor_mixins": [
+        "chemical or drug or treatment",
+        "outcome",
+        "clinical trial and regulatory approval context mixin",
+        "subject of investigation"
+      ],
+      "shared_angle": {
+        "gene": "diagnostic markers, inherited causes and therapeutic targets",
+        "protein": "biomarkers and drug targets",
+        "chemical entity": "treatments, exposures and adverse events",
+        "biological process": "organ-level dysfunction and disease mechanisms",
+        "cell": "histological and cellular features observed in patients",
+        "cellular component": "structural features seen in tissue"
+      }
+    }
+  }
+}

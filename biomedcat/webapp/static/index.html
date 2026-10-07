@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BiomedCAT console</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="banner">
+  <span class="tag">RESEARCH USE</span>
+  <span><strong>BiomedCAT is a research tool for scientists building mechanistic hypotheses.</strong>
+  It provides no medical advice. Documents are read on this computer; only entity names are sent to the Translator
+  name resolvers unless the offline option is selected. Jobs run for minutes to hours: keep the computer awake and this console open.</span>
+</div>
+
+<div class="app">
+  <aside class="queue">
+    <h1>BiomedCAT</h1>
+    <div class="status-line" id="status">checking the local services…</div>
+    <h2>Jobs <span class="small muted" id="jobs-count"></span></h2>
+    <div id="jobs"><p class="muted small">No job yet. Drop a slide deck on the right to start.</p></div>
+  </aside>
+
+  <main>
+    <section class="card" id="new-job">
+      <h2>New analysis</h2>
+      <div class="drop" id="drop">
+        <p><strong>Drop slide decks here</strong> (PDF, PNG, JPG), one file or whole folders.</p>
+        <p>
+          <button type="button" id="pick-files">Choose files</button>
+          <button type="button" id="pick-folder">Choose a folder</button>
+        </p>
+        <p class="hint">Export PowerPoint or Keynote decks to PDF first. Each dropped folder becomes one job; files dropped together are grouped in one job.</p>
+        <input type="file" id="file-input" multiple hidden accept=".pdf,.png,.jpg,.jpeg">
+        <input type="file" id="folder-input" webkitdirectory multiple hidden>
+      </div>
+      <ul id="file-list"></ul>
+      <label>Job name <input id="job-name" placeholder="defaults to the folder or first file name"></label>
+      <fieldset id="profiles"><legend>Profiles (one context graph per selected profile)</legend><p class="muted small">loading…</p></fieldset>
+      <fieldset id="custom-profiles">
+        <legend>Custom profiles (your own priorities)</legend>
+        <div id="custom-list"><p class="muted small">None yet. A custom profile sets, for each family of Biolink entities, whether it is of primary interest (1), secondary interest (0.5) or out of scope (0); the class scope and the predicate weights are derived automatically and shipped with the results.</p></div>
+        <p><button type="button" id="custom-open">Build a custom profile</button></p>
+        <div id="custom-builder" class="builder" hidden>
+          <div class="builder-head">
+            <label>Name <input id="custom-name" placeholder="e.g. drug targets and pathways"></label>
+            <label>Start from
+              <select id="custom-base"><option value="">nothing (all branches out of scope)</option></select>
+            </label>
+            <label>Directionality
+              <select id="custom-dir">
+                <option value="on">on: follow edge direction, reverse direction penalised</option>
+                <option value="off">off: undirected traversal</option>
+              </select>
+            </label>
+            <label id="custom-inv-label">Reverse factor <input id="custom-inv" type="number" min="0" max="1" step="0.1" value="0.5"></label>
+          </div>
+          <label class="focus-field">Reading focus (optional)
+            <textarea id="custom-focus" rows="3" maxlength="400" placeholder="What should the reader look for on the slides?"></textarea>
+          </label>
+          <p class="hint"><span id="custom-focus-count">0</span> / 400 characters. Free text added to the instructions that describe each slide, to orient what is noticed and named. Keep it short and factual: no instructions about format.<br>
+            Example: <em>gene: genes whose expression or regulation changes in the disease; chemical entity: compounds tested as treatments, with their targets; phenotypic feature: cellular readouts shown in microscopy images.</em></p>
+          <p class="hint">Priority per entity branch: <strong>1</strong> primary, <strong>0.5</strong> secondary, <strong>0</strong> out of scope (nodes of that family are neither expanded nor kept). Predicates are weighted from the branches they connect; changes of representation (gene / transcript / protein / drug target) always count 1.</p>
+          <div id="custom-branches" class="branches"></div>
+          <p><button type="button" class="primary" id="custom-add">Add this profile to the job</button> <button type="button" id="custom-cancel">Cancel</button></p>
+          <div class="error" id="custom-error" hidden></div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Options</legend>
+        <label><input type="checkbox" id="opt-review"> Review the entity list before anything is sent to the resolvers (human in the loop; the job pauses after reading)</label>
+        <label><input type="checkbox" id="opt-offline"> Offline linking: no text leaves this computer (exact-name matching only, lower recall; the existence gate keeps only its second-model check)</label>
+        <label>Existence gate against invented entities
+          <select id="opt-gate">
+            <option value="union">name resolver + second model (default)</option>
+            <option value="es">name resolver only</option>
+            <option value="llm">second model only</option>
+            <option value="off">off</option>
+          </select>
+        </label>
+      </fieldset>
+      <div class="estimate" id="estimate" hidden></div>
+      <div class="error" id="submit-error" hidden></div>
+      <button class="primary" id="submit" disabled>Start analysis</button>
+    </section>
+
+    <section class="card" id="detail" hidden></section>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

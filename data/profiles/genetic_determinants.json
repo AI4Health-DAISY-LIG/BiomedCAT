@@ -1,0 +1,71 @@
+{
+  "name": "genetic determinants",
+  "description": "Heredity and molecular-genetics angle: the causal variant, its mode of inheritance, and the gene or regulatory region it alters -- not what the alteration does downstream (biochemical actions) nor how it presents in the clinic (clinical mechanisms). Entity branches of the genetic stratum at priority 1 (gene, sequence variant, genotype, haplotype, genetic inheritance, genome, regulatory region, coding sequence, exon, chromatin/epigenetic marks, disease or phenotypic feature); predicate weights derived from the Biolink hierarchy (biomedcat.weights).",
+  "branch_weights": {
+    "gene": 1.0,
+    "sequence variant": 1.0,
+    "genotype": 1.0,
+    "haplotype": 1.0,
+    "genetic inheritance": 1.0,
+    "genome": 1.0,
+    "regulatory region": 1.0,
+    "coding sequence": 1.0,
+    "exon": 1.0,
+    "nucleic acid sequence motif": 1.0,
+    "nucleosome modification": 1.0,
+    "reagent targeted gene": 1.0,
+    "disease or phenotypic feature": 1.0,
+    "organismal entity": 0.5,
+    "transcript": 0.5,
+    "polypeptide": 0.5,
+    "biological process or activity": 0.5
+  },
+  "directionality": {
+    "mode": "on",
+    "inverse_factor": 0.5
+  },
+  "weighting": {
+    "alpha": 0.7,
+    "scope_rule": "max",
+    "min_weight": 0.0
+  },
+  "sources": {
+    "infores:diseases": 0.2,
+    "infores:disgenet": 0.5,
+    "infores:intact": 0.3,
+    "infores:pathwhiz": 0.3,
+    "infores:hmdb": 0.3
+  },
+  "knowledge_levels": {
+    "prediction": 0.3
+  },
+  "prefix_restricted_predicates": {
+    "biolink:subclass_of": [
+      "MONDO:",
+      "HP:",
+      "DOID:",
+      "EFO:",
+      "Orphanet:",
+      "orphanet:",
+      "NCIT:"
+    ]
+  },
+  "entity_scope": [
+    "gene",
+    "sequence variant",
+    "genotype",
+    "haplotype",
+    "genetic inheritance",
+    "genome",
+    "regulatory region",
+    "coding sequence",
+    "exon",
+    "nucleosome modification",
+    "disease",
+    "phenotypic feature",
+    "protein",
+    "transcript",
+    "biological process"
+  ],
+  "reading_focus": "disease: hereditary basis, causal variant and mode of inheritance; phenotypic feature: genotype-phenotype correlation and penetrance; protein: functional consequence of the variant on the gene product; biological process: pathway disrupted by the variant, named only to place the variant, not traced downstream"
+}

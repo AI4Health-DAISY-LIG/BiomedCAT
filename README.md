@@ -1,205 +1,168 @@
 # BiomedCAT
 
-BiomedCAT converts biomedical presentation slides into knowledge-base-grounded entities: it reads the text off each slide, extracts the typed biomedical entities, and links each one to a standard identifier (CURIE) in a biomedical knowledge base.
+Biomedical Context Analysis Tool: reads scientific slide decks (PDF or images), extracts the
+biomedical entities they mention, types them against the Biolink model, links them to RTX-KG2c
+identifiers and extracts a **user-defined contextual subgraph** of RTX-KG2c around them, one per
+preference profile (biochemical actions, clinical mechanisms, uniform baseline).
 
-Knowledge-graph construction methods assume clean plain text such as PubMed abstracts, but biomedical researchers communicate through slides that mix text, figures, tables, and charts, where a single corrupted character can invalidate a gene symbol and break downstream extraction. BiomedCAT treats input modality as a first-class problem. The working domain is facioscapulohumeral muscular dystrophy (FSHD).
+Everything runs on one computer with 16 GB of RAM: a local vision model reads the slides, a local
+language model types the entities, DuckDB extracts the subgraph. Only entity names are sent to the
+Translator name resolvers, and that can be switched off.
 
-![pipeline](docs/pipeline.png)
+## Quick start (researchers): the local console
 
-The pipeline runs in three stages, each an independent module with a single entry point that manages its own model lifecycle:
+Prerequisites: [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com/) with the models
+`qwen2.5vl:3b`, `gemma4:e4b-it-qat`, `llama-guard3:1b`, `llama3:8b` (`ollama pull <model>`),
+poppler (`pdfinfo`/`pdftoppm` on the PATH) and the filtered RTX-KG2c tables in `data/kg2c/`
+(see *Building the knowledge graph* below).
 
-1. **OCR**: slide images to text (GLM-OCR).
-2. **NER**: text to typed biomedical entities (Llama-3.1-8B, zero-shot).
-3. **Normalization**: entities to knowledge-base identifiers (retrieval plus a language-model judge).
-
-## Requirements
-
-**Hardware**: a CUDA-capable **NVIDIA GPU with at least 8 GB of VRAM**. The language models run in 4-bit CUDA quantization, so an NVIDIA GPU is required. The pipeline therefore runs on **Linux or Windows** machines that have such a GPU. **macOS is not supported**, because it does not provide NVIDIA CUDA.
-
-**Disk**: roughly 27 GB free: about 8 GB for the Python environment and about 18 GB for the model weights, which are downloaded once on the first run and cached in `~/.cache/huggingface`.
-
-**Software**: [uv](https://docs.astral.sh/uv/) as the dependency manager, plus poppler and LibreOffice as system tools. Python itself is provisioned by uv and does not need to be installed separately.
-
-## Setup
-
-### Step 0. Request model access first
-
-Access to `meta-llama/Llama-3.1-8B-Instruct` is gated: request it on [its Hugging Face page](https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct) and accept the license. Approval is not immediate and can take hours, so start this before anything else. While waiting, create a token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens); it is needed in step 4.
-
-### Step 1. Install uv
-
-| Platform | Command |
-|---|---|
-| Linux | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| Windows (PowerShell) | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
-| Any (via pip) | `pip install uv` |
-
-### Step 2. Install poppler and LibreOffice
-
-| Platform | Command |
-|---|---|
-| Linux (Debian / Ubuntu) | `sudo apt install poppler-utils libreoffice` |
-| Windows | Install LibreOffice from [libreoffice.org](https://www.libreoffice.org/), then install poppler (for example `conda install -c conda-forge poppler`, or download the prebuilt binaries). |
-
-On Windows, **both** tools must be on `PATH`. LibreOffice is located by searching `PATH` for `soffice`, and its installer does not add itself, so add its `program` directory (typically `C:\Program Files\LibreOffice\program`) manually. Poppler's `bin` directory needs the same treatment.
-
-### Step 3. Clone the repository and build the environment
-
-```
-git clone https://github.com/AI4Health-DAISY-LIG/BiomedCAT.git
-cd BiomedCAT
+```bash
 uv sync
+uv run python scripts/install_scispacy_model.py   # tokenizer of the sparse (BM25) retrieval leg, once
+uv run python -m biomedcat.webapp
 ```
 
-`uv sync` reproduces the exact dependency versions from `pyproject.toml` and `uv.lock`. The lockfile pins the CUDA 11.8 build of PyTorch; if your GPU needs a different CUDA version, adjust the `pytorch-cu118` index in `pyproject.toml` before running it.
+These defaults keep every retrieval leg on; the published results use `SCISPACY=0 RAG_BM25=0 RAG_LEXICAL_WEIGHT=0 RAG_KG2C_LEXICAL=0` (set them before the last command; the Docker image sets them). The second line installs the scispaCy `en_core_sci_sm` model, which cannot be declared in
+`pyproject.toml` (its only release pins spaCy < 3.8); without it the retriever runs dense-only and
+logs a warning. The console opens in your browser at http://127.0.0.1:8765 (localhost only). From there:
 
-### Step 4. Add your Hugging Face token
+1. **Drop slide decks** (PDF, PNG, JPG), single files or whole folders, on the *New analysis* card.
+   Choose the **profiles** to run (one context graph per profile, the slides are read once) and the
+   options: human review of the entity list before anything is sent to the resolvers, offline
+   linking, existence gate.
+2. The job joins the **queue** on the left with its estimated duration, then its live progress and
+   stage timings. Jobs run one at a time; keep the computer awake and the console open.
+3. When a job is done, **Visualize my results** opens the Cytoscape viewer: nodes clustered by
+   Biolink group and coloured by Biolink category, seeds and profile scope outlined, node names and
+   edge types visible, a details panel with provenance (slides, seeds), RTX-KG2c descriptions and
+   publications (when the extras tables are built), search, filters, PNG export, and a **GO
+   enrichment** of the graph's genes (local hypergeometric test on RTX-KG2c annotations, or
+   g:Profiler online on request).
+4. **Download** packs the whole job: entities JSON, review sheet, per-profile graphs (CSV, GraphML,
+   Cytoscape JSON, details tables with KG2c publications), enrichment results, the full log and a
+   trace README.
 
-Create a `.env` file in the repository root, next to `pyproject.toml`:
+Job directories live in `output/jobs/<job id>/`; uploaded documents are copied to `Dataset/<job id>/`.
 
-```
-BIOMEDCAT_HF_TOKEN=hf_your_token_here
-```
+### Optional: RTX-KG2c descriptions, publications and GO annotations
 
-This file is read relative to the directory the pipeline is launched from, so **run every command below from the repository root**. Launching from elsewhere leaves the token unset and the run fails at model download.
-
-### Step 5. Add your presentations
-
-Input files are not distributed with the code. Create a `Dataset/` directory in the repository root and place the presentations to process inside it:
-
-```
-mkdir Dataset
-```
-
-Supported formats: `.pptx`, `.pdf`, `.png`, `.jpg`, `.jpeg`. A single file elsewhere on disk can also be passed directly, in which case `Dataset/` is not needed.
-
-
-## Usage
-
-Process every file in `Dataset/` that has no output yet:
-
-```
-uv run python -m biomedcat.pipeline
+```bash
+uv run python scripts/build_kg2c_extras.py --nodes <kg2c-nodes.jsonl.gz> --edges <kg2c-edges.jsonl.gz>
 ```
 
-Each file produces two artefacts in `Output/`, which is created if absent: `<name>_BiomedCAT.json` holding the results, and `<name>_BiomedCAT.log` holding the full per-sentence trace of the run. A file whose JSON output already exists is skipped, so the batch is resumable across sessions; delete an output file to process that presentation again.
+writes `node_details.parquet`, `edge_publications.parquet` and `gene_go.parquet` into `data/kg2c/`.
+Without them the viewer still works, but shows no description or publication, and the local GO
+enrichment only uses the annotations kept in the filtered graph.
 
-To run on a single file anywhere on disk instead:
+### Offline viewer
 
+The viewer loads Cytoscape.js from the CDNs; for a fully offline machine, place `cytoscape.min.js`
+in `biomedcat/webapp/static/vendor/` (see the README there).
+
+## Installation with Docker (end users)
+
+For users who prefer not to install Python, uv, poppler and Ollama themselves. Requires
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows, macOS) or Docker Engine
+with the compose plugin (Linux), 16 GB of RAM and about 25 GB of free disk space (models, image and knowledge-graph tables).
+
+1. **Get the code and the knowledge graph.** Clone this repository, then place the filtered
+   RTX-KG2c tables in `data/kg2c/` (see *Building the knowledge graph* below; the build needs the
+   RTX-KG2c 2.10.1 dumps and runs once, with `uv`, outside Docker). The reading profiles
+   (`data/profiles/`) and the retrieval exemplars (`data/biolink_exemplars.parquet`) are in the
+   repository.
+
+2. **Start the console and the model server.**
+
+   ```bash
+   docker compose up -d --build
+   ```
+
+3. **Download the four models** into the Ollama container (once, several GB):
+
+   ```bash
+   docker compose exec ollama ollama pull qwen2.5vl:3b
+   docker compose exec ollama ollama pull gemma4:e4b-it-qat
+   docker compose exec ollama ollama pull llama-guard3:1b
+   docker compose exec ollama ollama pull llama3:8b
+   ```
+
+4. **Open http://localhost:8765** and use the console as described in *Quick start* above. The
+   first job builds the Biolink index and downloads the embedding model (a few minutes, once).
+
+The image runs the configuration of the published results (dense and exemplar retrieval, ReAct
+agent, `union` existence gate). Documents, results and the Biolink index stay in the local folders
+`Dataset/`, `output/` and `data/`; the console is reachable from this computer only. To link
+without sending any entity name to the Translator services, tick *offline linking* in the console
+or set `RESOLVERS_OFFLINE=1` in `docker-compose.yml`. With an NVIDIA GPU, uncomment the `deploy`
+block of the `ollama` service; without one the models run on the CPU, more slowly.
+
+```bash
+docker compose logs -f biomedcat   # follow a job
+docker compose down                # stop (models and results are kept)
 ```
-uv run python -m biomedcat.pipeline path/to/your/slides.pptx
+
+## Command line
+
+```bash
+uv run python -m biomedcat.pipeline Dataset/slides.pdf            # one file, default profile
+uv run python -m biomedcat.pipeline --review Dataset/slides.pdf   # stop after reading, write the review CSV
+uv run python -m biomedcat.pipeline --resume output/slides_review.csv
+uv run python -m biomedcat.stages.context_graph --result-json output/slides_BiomedCAT.json --profile data/profiles/clinical_mechanisms.json --out output/slides_clinical
 ```
 
-**The first run downloads roughly 20 GB of model weights** before any processing starts, and produces no output while doing so. This is expected and happens once. Later runs start immediately from the cache.
+Environment variables (see `biomedcat/config.py`): `OLLAMA_URL`, `OCR_MODEL_ID`, `CLASSIFICATION_MODEL_ID`,
+`PREDICATE_PROFILE`, `RESOLVERS_OFFLINE`, `REVIEW_MODE`, `EXISTENCE_GATE` (`union`, `nameres`, `llm`, `off`; the resolver leg queries the production Name Resolver, `GATE_NAMERES_URL`),
+`KG2C_DIR`, `RAG_EXEMPLARS` (`off` to disable the exemplar index), `AGENT_TREE_SKELETON`, `AGENT_SEARCH_TOP_K`,
+`AGENT_MODE` (`react`, the default and the published configuration: the tool loop; `decide`: one retrieval of the
+term, the top candidates plus their is_a neighbourhood, one decision call with hidden reasoning; better on the
+original synthetic labels, not confirmed on the expert-audited ones), `RAG_BM25` (`0` to disable the sparse leg).
+`BIOLINK_MODEL_SOURCE` pins the Biolink model (default: the v4.4.4 release on GitHub; a local YAML path works offline).
+`SCISPACY=0` runs without the scispaCy model even when it is installed (rule-based sentencizer, basic tokenizer, no
+BM25 leg). The configuration of every published number (benchmark runs and document runs) is
+`SCISPACY=0 RAG_BM25=0 RAG_LEXICAL_WEIGHT=0 RAG_KG2C_LEXICAL=0`: dense + exemplar retrieval only, agent ReAct.
 
-After the download, each file takes several minutes: three models load in sequence (GLM-OCR, then Llama for NER, then Llama for normalization) and two public resolvers are queried, with the NER stage dominating. Progress is logged per stage.
+## Building the knowledge graph
 
-The terminal shows stage-level progress and any warnings. The JSON holds the transcribed text per slide, the typed entities, and the identifier each was linked to, alongside the models, resolver endpoints, and elapsed time behind the run. The log holds the full per-sentence trace, and is written even when a file fails.
-
-### Example output
-
-```
---- OCR (2 slide(s)) ---
-[slide 1]
-Facioscapulohumeral muscular dystrophy (FSHD)
-- FSHD is the third most common type of muscular dystrophy...
-
---- NER (31 entit(y/ies)) ---
-  DISEASE                  FSHD
-  GENE                     DUX4 protein
-  EPIGENETIC_MODIFICATION  methylation
-  ...
-
---- Normalization (29/31 linked) ---
-  DISEASE                  FSHD                               -> MONDO:0001347
-  GENE                     DUX4 protein                       -> NCBIGene:100288687
-  CHROMOSOMAL_LOCUS        D4D4 array                         -> NIL
-  ...
-
-Wrote /path/to/BiomedCAT/Output/FSHD1_BiomedCAT.json
+```bash
+uv run python scripts/build_kg2c_parquet.py --nodes <kg2c-nodes.jsonl.gz> --edges <kg2c-edges.jsonl.gz>
 ```
 
-The final `Wrote` line confirms the run completed and names the file produced. An entity the judge declined to link prints as `NIL` and is written to the JSON as `"curie": null` rather than being omitted.
+filters RTX-KG2c 2.10.1 to structural noise only -- aligned directly to `data/biolink-model.yaml`
+(no predicate or category that isn't literally a slot or a class of that file). RTX-KG2c's
+redundantly `biolink_`-doubled predicates (`biolink:biolink_treats`, ...) are normalized to their
+real Biolink name and merged with the correctly-labeled edges rather than dropped -- for `treats`
+the doubled form outnumbers the well-formed one ~180 to 1; a doubled predicate with no real name
+even once normalized (`biolink:biolink_mentioned_in_trials_for`) is dropped like any other
+off-model predicate. No SemMedDB, no equivalence edges, no overly generic predicate such as
+`related_to` -- and writes
+`data/kg2c/{edges,nodes,equivalents,degrees,predicates}.parquet`. This build knows nothing about
+preference profiles: the same Parquet serves every profile, current and future, so creating a new
+profile (or changing one) never requires rebuilding it. Predicate and knowledge-source weights,
+Biolink-category scope and prefix restriction (e.g. `subclass_of` limited to disease/phenotype
+ontologies) are all resolved at query time by the context-graph stage from the active profile
+(`biomedcat.profiles`, `biomedcat.weights`).
+The Biolink index of the typing agent is built on first run (`RAG_REINDEX=1` to rebuild); the
+exemplar index reads `data/biolink_exemplars.parquet` when present.
 
-## Web console
+## Evaluation
 
-The results of a run can be read in a browser instead of the terminal. The console is a read-only interface over `Output/`: it displays the presentations processed so far, and for any one of them the transcribed slides, the extracted entities with their assigned identifiers, the proportion resolved, and the time each stage consumed. A run can be downloaded as its original JSON or as a CSV of entities.
-
-The console does not run the pipeline. A presentation submitted through it is copied into `Dataset/`, where the next invocation of the pipeline collects it. It needs Node.js 20.9 or later and neither a GPU nor the model weights.
-
-```
-cd frontend
-npm install
-npm run dev
-```
-
-The console is then served at `http://localhost:3000`. Its architecture is documented in `BiomedCAT_Frontend_Documentation.tex`.
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `No Dataset/ directory` | no input supplied | step 5, or pass a file path |
-| `torch.cuda.OutOfMemoryError` | another process holds VRAM | close other GPU processes and check `nvidia-smi`; in VS Code, reload the window to clear stale kernels |
-| `RuntimeError: LibreOffice (soffice) not found` | LibreOffice not on `PATH` | step 2 |
-| poppler or `pdftoppm` errors | poppler not on `PATH` | step 2 |
-| HTTP 401 or 403 from Hugging Face | token missing, or access not approved | steps 0 and 4; confirm the run is launched from the repository root |
-| Long silence at the start | first-run model download | expected once; watch `~/.cache/huggingface` grow |
-
-## How it works
-
-Three design choices, all shaped by the 8 GB VRAM budget, are shared across the stages:
-
-- **4-bit quantization**: shrinks Llama-3.1-8B to roughly 5.7 GB so it fits the card.
-- **Scale-to-zero lifecycle**: each stage loads its model, processes the input, and frees it, so the three models share one small GPU.
-- **Determinism**: greedy decoding, together with text steps that are deterministic rather than sampled (scispaCy sentence segmentation, grounding, deduplication), makes a run reproducible on the same inputs.
-
-**OCR**: GLM-OCR, a vision-language model, transcribes each slide. Presentations and PDFs are rendered to page images, which preserves the layout that plain-text extraction would lose. Pages are transcribed in batches and streamed one batch at a time, so large files stay within memory.
-
-**NER**: following ZeroTuneBio, each sentence passes through four steps. Three query Llama-3.1-8B: extract all professional terms to maximize recall, classify each term into one of seven types or none to recover precision, and finally discard only those typings the model flags as wrong. Between the first two, a rule-based grounding step keeps only the terms that appear verbatim in the sentence, which removes hallucinated spans without a model call.
-
-### Entity types
-
-Five of the seven types map to a class in the Biolink Model. The mapping drives a type-constrained retrieval pass, which recovers correctly typed candidates that surface matching misses.
-
-| Entity type | Biolink class |
-|---|---|
-| `GENE` | `biolink:Gene` |
-| `DISEASE` | `biolink:Disease` |
-| `CHEMICAL` | `biolink:ChemicalEntity` |
-| `CELL_TYPE` | `biolink:Cell` |
-| `ANATOMY` | `biolink:AnatomicalEntity` |
-| `CHROMOSOMAL_LOCUS` | not mapped |
-| `EPIGENETIC_MODIFICATION` | not mapped |
-
-The last two have no Biolink class that carries identifiers, so they receive no type-constrained pass and rely on surface matching alone. Entities of those types normalize less reliably than the rest.
-
-**Normalization**: each entity is looked up in two resolvers, the RENCI name resolver and the ARAX entity normalizer, together with a further pass constrained to the entity's Biolink class where one is mapped. Terms are resolved concurrently, one thread per term, so the network waits overlap. The results are unioned by CURIE and ranked, with candidates that several resolvers agree on placed first. A language-model judge then selects the candidate whose type and meaning both match the entity, or abstains.
-
-## Limitations and future work
-
-- **Gold annotation**: no gold set exists yet for NER or Normalization.
-- **Hardware**: the pipeline requires a CUDA-capable NVIDIA GPU with 8 GB of VRAM and does not run on CPU or macOS. On the 8 GB target the language-model stages are at their computational floor.
-- **Retrieval inputs**: Normalization depends on two public resolvers, so recall can drift as those services change, and responses are not cached between runs. A failed lookup is logged and treated as returning no candidates, so a run affected by one is not exactly reproducible.
+The typing benchmark, the baselines and the evaluation scripts live in the companion repository
+`KG_nodes_eval`; the gold test suite of the FSHD deck and the document-level scripts are in
+`scripts/`: `eval_gold.py` and `eval_gold_decks.py` (expert gold), `run_adversarial.py` and `eval_gate_modes.py`
+(existence gate), `measure_pipeline_resources.py` (memory and time), `chain_publication_runs.sh` (the runs of the
+article), `build_publication_folder.py` (the deposited archive), `make_figures.py`, `make_voie_panel.py`,
+`make_fig4_dux4.py`, `voie_multiscale_case.py` and `build_fshd_profile_graphs.sh` (figures and tables).
+Scripts and code not used by the tool or the article are kept locally in `archive/` (not distributed).
 
 ## Repository layout
 
-```
-biomedcat/     the pipeline, an installable Python package
-frontend/      the web console (Next.js, TypeScript)
-docs/          the pipeline figure
-Dataset/       input presentations, created by the user
-Output/        one JSON and one log per processed presentation, created by the pipeline
-```
+- `biomedcat/` pipeline: `stages/ocr.py`, `stages/ner_agent.py` (typing agent), `stages/norm.py`
+  (linking), `stages/context_graph.py`, `profiles.py`, `retrieval.py`, `pipeline.py`.
+- `biomedcat/webapp/` the local console (FastAPI + static interface, job queue, runner, Cytoscape export, enrichment).
+- `data/profiles/` preference profiles; `data/biolink_strata.json` reading scopes derived from the Biolink model.
+- `scripts/` build and evaluation scripts; `tests/` pytest suites (`uv run python -m pytest tests`).
+- `Dockerfile`, `docker-compose.yml`: the console and its Ollama model server for end users (see *Installation with Docker*).
 
-The pipeline package is organized one module per concern:
-
-- `config.py`: deployment configuration (model identifiers, resolver endpoints, the Hugging Face token), read from the environment or a local `.env` file.
-- `types.py`: the typed data model passed between stages (Slide, Entity, Candidate, NormalizedEntity) and the entity-type vocabulary.
-- `runtime.py`: the shared runtime layer (CUDA and determinism setup, the 4-bit language-model factory, the greedy generation helper).
-- `prompts.py`: every model-facing prompt, isolated so the research-tuned wording is versioned separately from the pipeline logic.
-- `stages/ocr.py`, `stages/ner.py`, `stages/norm.py`: the three stages, each with a single entry point.
-- `retrieval.py`: the RENCI and ARAX resolvers behind a common interface, and the mapping from entity type to Biolink class that drives the type-constrained pass.
-- `pipeline.py`: the orchestrator, which runs one file through the three stages and drives the batch over `Dataset/`.
-
-The console under `frontend/` shares no code with the package. The two are coupled only by the location of `Dataset/` and `Output/` and by the `<name>_BiomedCAT.json` naming convention.
+## AI usage
+Code development was assisted by generative AI models for testing, refactoring, and UI/Docker packaging.
+Generative AI was used to create synthetic datasets for benchmarking.

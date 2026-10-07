@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BiomedCAT viewer</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="viewer">
+  <aside class="panel left">
+    <p><a href="/">← Console</a></p>
+    <h2 id="title">Context graph</h2>
+    <div id="meta" class="muted small"></div>
+    <label>Profile <select id="profile-select"></select></label>
+    <label>Nodes shown (best scores, seeds always kept): <b id="budget-val">400</b>
+      <input type="range" id="budget" min="50" max="4000" step="50" value="400"></label>
+    <div class="controls">
+      <button id="fit">Fit</button>
+      <button id="relayout">Cluster layout</button>
+      <button id="cose">Force layout</button>
+      <button id="png">Export PNG (with legend)</button>
+      <label><input type="checkbox" id="edge-labels" checked> edge types</label>
+      <label><input type="checkbox" id="show-legend" checked> legend</label>
+      <label><input type="checkbox" id="only-scope"> profile scope only</label>
+      <label><input type="checkbox" id="only-seed-nb"> seed neighbourhood</label>
+    </div>
+    <div class="controls">
+      <button id="summary-html">Graph summary (page)</button>
+      <button id="summary-md">Summary (.md)</button>
+    </div>
+    <label>Group nodes by
+      <select id="group-mode">
+        <option value="cluster">Biolink group (genes, chemicals, diseases…)</option>
+        <option value="scope">profile stratum (core / shared / outside)</option>
+      </select></label>
+    <div class="hint-box"><b>Profile stratum.</b> Each profile belongs to a granularity stratum (biochemical or clinical).
+      <b>Core</b> classes are the Biolink classes that belong only to that stratum (for the biochemical stratum: transcripts, sequence variants,
+      molecular activities, protein domains…). <b>Shared</b> classes are used by both strata but read from the stratum's angle
+      (genes, proteins, small molecules, diseases, anatomy…). <b>Outside</b> groups the remaining classes (organisms, publications, generic things…).
+      The uniform profile has no stratum: everything is "outside".</div>
+    <h3 id="clusters-title">Clusters (Biolink groups)</h3>
+    <div id="clusters"></div>
+    <h3>Biolink categories</h3>
+    <div id="legend"></div>
+    <h3>GO enrichment (genes of the graph)</h3>
+    <div class="controls">
+      <select id="enrich-backend">
+        <option value="local">local: RTX-KG2c annotations (offline)</option>
+        <option value="gprofiler">g:Profiler (online, sends the gene ids)</option>
+      </select>
+      <select id="enrich-scope">
+        <option value="graph">all genes of the graph</option>
+        <option value="seeds">seed genes only</option>
+      </select>
+      <button id="enrich-run" class="primary">Run</button>
+    </div>
+    <div id="enrich-result" class="small"></div>
+  </aside>
+  <div id="cy-wrap">
+    <div id="cy"></div>
+    <div class="overlay search">
+      <input id="search" placeholder="Search a node name (gene, drug, disease…)" autocomplete="off">
+      <div class="results" id="search-results"></div>
+    </div>
+    <div class="overlay legend" id="figure-legend"></div>
+  </div>
+  <aside class="panel right">
+    <div id="info"><p class="muted">Click a node or an edge for its details: identifiers, provenance (which slides and seeds reach it), RTX-KG2c descriptions and publications when available. Links open in a separate window.</p></div>
+  </aside>
+</div>
+<div class="statusbar" id="statusbar">loading…</div>
+<script>
+  /* Cytoscape.js: a vendored copy first (static/vendor/cytoscape.min.js, for offline use), then the CDNs. */
+  (function () {
+    var sources = ["/static/vendor/cytoscape.min.js",
+                   "https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.4/cytoscape.min.js",
+                   "https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"];
+    function tryNext(i) {
+      if (i >= sources.length) { document.getElementById("statusbar").textContent = "Cytoscape.js could not be loaded: place cytoscape.min.js in biomedcat/webapp/static/vendor/ for offline use."; return; }
+      var s = document.createElement("script");
+      s.src = sources[i];
+      s.onload = function () { window.initViewer && window.initViewer(); };
+      s.onerror = function () { tryNext(i + 1); };
+      document.head.appendChild(s);
+    }
+    window.addEventListener("DOMContentLoaded", function () { tryNext(0); });
+  })();
+</script>
+<script src="/static/viewer.js"></script>
+</body>
+</html>
